@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
+  <meta http-equiv="Pragma" content="no-cache"/>
+  <meta http-equiv="Expires" content="0"/>
+  <meta name="version" content="v3.2-fixed-2025-01-26-4"/>
+  <title>Private Chat</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto;
+      background: #f5f5f5;
+    }
+    #app {
+      max-width: 600px;
+      margin: auto;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: #fff;
+    }
+    header {
+      padding: 12px;
+      text-align: center;
+      background: #2f80ed;
+      color: #fff;
+      font-size: 18px;
+    }
+    #auth-forms {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 40px;
+    }
+    .auth-form {
+      display: none;
+    }
+    .auth-form.active {
+      display: flex;
+      flex-direction: column;
+    }
+    .form-title {
+      text-align: center;
+      color: #2f80ed;
+      margin-bottom: 20px;
+    }
+    .form-group {
+      margin-bottom: 15px;
+    }
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 500;
+      font-size: 14px;
+    }
+    input {
+      width: 100%;
+      padding: 12px;
+      font-size: 16px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      box-sizing: border-box;
+    }
+    input:focus {
+      outline: none;
+      border-color: #2f80ed;
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      font-size: 16px;
+      border: none;
+      background: #2f80ed;
+      color: #fff;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #2565d3;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .error {
+      color: #dc3545;
+      margin-bottom: 15px;
+      font-size: 14px;
+      padding: 10px;
+      background: #f8d7da;
+      border-radius: 4px;
+      display: none;
+    }
+    .error.show {
+      display: block;
+    }
+    .success {
+      color: #155724;
+      margin-bottom: 15px;
+      font-size: 14px;
+      padding: 10px;
+      background: #d4edda;
+      border-radius: 4px;
+      display: none;
+    }
+    .success.show {
+      display: block;
+    }
+    .form-hint {
+      font-size: 12px;
+      color: #6c757d;
+      margin-top: 4px;
+    }
+    .toggle-link {
+      text-align: center;
+      margin-top: 20px;
+      font-size: 14px;
+    }
+    .toggle-link a {
+      color: #2f80ed;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .toggle-link a:hover {
+      text-decoration: underline;
+    }
+    #chat-app {
+      display: none;
+      flex-direction: column;
+      height: 100%;
+    }
+    #chat {
+      flex: 1;
+      padding: 10px;
+      overflow-y: auto;
+    }
+    .msg {
+      margin-bottom: 8px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    .msg.mine {
+      background: #e3f2fd;
+      margin-left: 40px;
+    }
+    .msg.other {
+      background: #f5f5f5;
+      margin-right: 40px;
+    }
+    .msg.system {
+      background: #fff3cd;
+      text-align: center;
+      font-size: 13px;
+      margin-left: 0;
+      margin-right: 0;
+    }
+    .msg-sender {
+      font-weight: 500;
+      color: #2f80ed;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .msg-time {
+      font-size: 11px;
+      color: #999;
+    }
+    #status {
+      padding: 8px 12px;
+      background: #fff3cd;
+      font-size: 13px;
+      text-align: center;
+    }
+    .connected {
+      background: #d4edda !important;
+    }
+    footer {
+      display: flex;
+      border-top: 1px solid #ddd;
+      padding: 10px;
+    }
+    #message-input {
+      flex: 1;
+      padding: 12px;
+      font-size: 16px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      margin-right: 10px;
+    }
+    #send-btn {
+      width: auto;
+      padding: 12px 24px;
+    }
+    .encryption-info {
+      font-size: 11px;
+      color: #28a745;
+      margin-top: 4px;
+    }
+    .encryption-warning {
+      font-size: 11px;
+      color: #856404;
+      margin-top: 8px;
+      padding: 8px;
+      background: #fff3cd;
+      border-radius: 4px;
+    }
+    #header {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 12px 20px;
+      position: relative;
+    }
+    #logout-btn {
+      background: #dc3545;
+      padding: 8px 16px;
+      width: auto;
+      font-size: 14px;
+      position: absolute;
+      right: 20px;
+      top: 50%;
+      transform: translateY(-50%);
+      display: none;
+    }
+    #logout-btn:hover {
+      background: #c82333;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header id="header">Private Chat<button id="logout-btn" onclick="logout()">退出</button></header>
+    
+    <!-- 认证表单 -->
+    <div id="auth-forms">
+      <div style="text-align: center; color: #999; font-size: 12px; padding: 10px;">
+        Private Chat v3.2 (2025-01-26-3) - 点击刷新页面可清除缓存
+      </div>
+      <!-- 登录表单 -->
+      <div id="login-form" class="auth-form active">
+        <h2 class="form-title">登录</h2>
+        <div id="login-error" class="error"></div>
+        <div id="login-success" class="success"></div>
+        <div class="form-group">
+          <label>用户名</label>
+          <input id="login-username" type="text" placeholder="输入用户名" />
+        </div>
+        <div class="form-group">
+          <label>密码</label>
+          <input id="login-password" type="password" placeholder="输入密码" />
+        </div>
+        <div class="form-group">
+          <label>消息加密密码（可选）</label>
+          <input id="login-encryption-key" type="password" placeholder="留空使用默认密码" />
+          <div class="form-hint">用于加密消息，默认: PrivateChat2025Secure!</div>
+          <div class="encryption-info">✓ AES-256 加密保护您的消息</div>
+          <div class="encryption-warning">
+            ⚠️ 重要：如果要看到其他用户的消息，必须使用相同的加密密码！
+          </div>
+        </div>
+        <button onclick="login()" id="login-btn">登录</button>
+        <div class="toggle-link">
+          没有账户？<a onclick="showRegister()">立即注册</a>
+        </div>
+      </div>
+
+      <!-- 注册表单 -->
+      <div id="register-form" class="auth-form">
+        <h2 class="form-title">注册新账户</h2>
+        <div id="register-error" class="error"></div>
+        <div id="register-success" class="success"></div>
+        <div class="form-group">
+          <label>用户名</label>
+          <input id="reg-username" type="text" placeholder="输入用户名" />
+          <div class="form-hint">3-20个字符，只能包含字母、数字和下划线</div>
+        </div>
+        <div class="form-group">
+          <label>密码</label>
+          <input id="reg-password" type="password" placeholder="输入密码" />
+          <div class="form-hint">6-32个字符</div>
+        </div>
+        <div class="form-group">
+          <label>确认密码</label>
+          <input id="reg-password-confirm" type="password" placeholder="再次输入密码" />
+        </div>
+        <button onclick="register()" id="reg-btn">注册</button>
+        <div class="toggle-link">
+          已有账户？<a onclick="showLogin()">立即登录</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- 聊天界面 -->
+    <div id="chat-app">
+      <div id="status">连接中...</div>
+      <div id="chat"></div>
+      <footer>
+        <input id="message-input" type="text" placeholder="输入消息..." />
+        <button onclick="send()" id="send-btn">发送</button>
+      </footer>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+  <script>
+    let ws = null;
+    let currentUser = null;
+    let encryptionKey = null;
+    const defaultEncryptionKey = "PrivateChat2025Secure!";
+
+    // AES-256 加密
+    function encrypt(message, key) {
+      try {
+        const keyHash = CryptoJS.SHA256(key).toString();
+        const iv = CryptoJS.lib.WordArray.random(16);
+        const encrypted = CryptoJS.AES.encrypt(message, CryptoJS.enc.Hex.parse(keyHash), {
+          iv: iv,
+          mode: CryptoJS.mode.CBC,
+          padding: CryptoJS.pad.Pkcs7
+        });
+        const combined = iv.clone().concat(encrypted.ciphertext);
+        return CryptoJS.enc.Base64.stringify(combined);
+      } catch (e) {
+        console.error("加密失败:", e);
+        return message;
+      }
+    }
+
+    // AES-256 解密
+    function decrypt(ciphertext, key) {
+      try {
+        console.log("[DEBUG] 开始解密，密钥:", key.substring(0, 3) + "***");
+        const keyHash = CryptoJS.SHA256(key).toString();
+        const combined = CryptoJS.enc.Base64.parse(ciphertext);
+        const iv = CryptoJS.lib.WordArray.create(combined.words.slice(0, 4));
+        const encrypted = CryptoJS.lib.WordArray.create(combined.words.slice(4));
+        const decrypted = CryptoJS.AES.decrypt(
+          { ciphertext: encrypted },
+          CryptoJS.enc.Hex.parse(keyHash),
+          {
+            iv: iv,
+            mode: CryptoJS.mode.CBC,
+            padding: CryptoJS.pad.Pkcs7
+          }
+        );
+        const result = decrypted.toString(CryptoJS.enc.Utf8);
+
+        // 严格验证解密结果
+        // CryptoJS有时不抛出异常，但返回乱码
+        // 需要检查结果是否为有效字符串
+        if (!result) {
+          return "加密消息：密码不同，无法解密消息";
+        }
+
+        // 检查结果长度
+        if (result.length === 0) {
+          return "加密消息：密码不同，无法解密消息";
+        }
+
+        // 检查是否包含无效字符（解密失败时通常包含大量控制字符）
+        // UTF-8有效字符不应该有太多控制字符
+        const controlCharCount = (result.match(/[\x00-\x1F\x7F]/g) || []).length;
+        if (controlCharCount > result.length * 0.3) {
+          console.log("[DEBUG] 解密结果包含太多控制字符:", controlCharCount, "总长度:", result.length);
+          return "加密消息：密码不同，无法解密消息";
+        }
+
+        // 检查是否为空字符串或纯空白
+        if (result.trim().length === 0) {
+          console.log("[DEBUG] 解密结果为空白，返回错误");
+          return "加密消息：密码不同，无法解密消息";
+        }
+
+        console.log("[DEBUG] 解密成功:", result.substring(0, 20));
+        return result;
+      } catch (e) {
+        console.error("解密失败:", e);
+        const errorMsg = "加密消息：密码不同，无法解密消息";
+        console.log("[DEBUG] 返回错误提示:", errorMsg);
+        return errorMsg;
+      }
+    }
+
+    // 显示登录表单
+    function showLogin() {
+      document.getElementById("login-form").classList.add("active");
+      document.getElementById("register-form").classList.remove("active");
+      clearMessages();
+      // 隐藏退出按钮
+      document.getElementById("logout-btn").style.display = "none";
+    }
+
+    // 显示注册表单
+    function showRegister() {
+      document.getElementById("login-form").classList.remove("active");
+      document.getElementById("register-form").classList.add("active");
+      clearMessages();
+      // 隐藏退出按钮
+      document.getElementById("logout-btn").style.display = "none";
+    }
+
+    // 清除错误和成功消息
+    function clearMessages() {
+      document.getElementById("login-error").classList.remove("show");
+      document.getElementById("login-success").classList.remove("show");
+      document.getElementById("register-error").classList.remove("show");
+      document.getElementById("register-success").classList.remove("show");
+    }
+
+    // 注册
+    async function register() {
+      const username = document.getElementById("reg-username").value.trim();
+      const password = document.getElementById("reg-password").value;
+      const confirmPassword = document.getElementById("reg-password-confirm").value;
+      // 注意：注册时不设置加密密码，只在登录时设置
+
+      const errorDiv = document.getElementById("register-error");
+      const successDiv = document.getElementById("register-success");
+      const regBtn = document.getElementById("reg-btn");
+
+      // 验证输入
+      if (!username || username.length < 3 || username.length > 20) {
+        errorDiv.textContent = "用户名长度必须在3-20个字符之间";
+        errorDiv.classList.add("show");
+        successDiv.classList.remove("show");
+        return;
+      }
+
+      if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+        errorDiv.textContent = "用户名只能包含字母、数字和下划线";
+        errorDiv.classList.add("show");
+        successDiv.classList.remove("show");
+        return;
+      }
+
+      if (!password || password.length < 6 || password.length > 32) {
+        errorDiv.textContent = "密码长度必须在6-32个字符之间";
+        errorDiv.classList.add("show");
+        successDiv.classList.remove("show");
+        return;
+      }
+
+      if (password !== confirmPassword) {
+        errorDiv.textContent = "两次输入的密码不一致";
+        errorDiv.classList.add("show");
+        successDiv.classList.remove("show");
+        return;
+      }
+
+      errorDiv.classList.remove("show");
+      successDiv.classList.remove("show");
+      regBtn.disabled = true;
+      regBtn.textContent = "注册中...";
+
+      try {
+        const response = await fetch("/register", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            username: username,
+            password: password
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.detail || "注册失败");
+        }
+
+        const data = await response.json();
+        successDiv.textContent = data.message + "，请登录";
+        successDiv.classList.add("show");
+        regBtn.disabled = false;
+        regBtn.textContent = "注册";
+
+        // 3秒后自动切换到登录
+        setTimeout(() => {
+          showLogin();
+          // 预填用户名
+          document.getElementById("login-username").value = username;
+          document.getElementById("login-password").value = "";
+        }, 2000);
+
+      } catch (error) {
+        errorDiv.textContent = error.message;
+        errorDiv.classList.add("show");
+        regBtn.disabled = false;
+        regBtn.textContent = "注册";
+      }
+    }
+
+    // 登录
+    async function login() {
+      const username = document.getElementById("login-username").value.trim();
+      const password = document.getElementById("login-password").value;
+      encryptionKey = document.getElementById("login-encryption-key").value || defaultEncryptionKey;
+
+      const errorDiv = document.getElementById("login-error");
+      const loginBtn = document.getElementById("login-btn");
+
+      errorDiv.classList.remove("show");
+      loginBtn.disabled = true;
+      loginBtn.textContent = "登录中...";
+
+      try {
+        // 请求 token
+        const formData = new FormData();
+        formData.append("username", username);
+        formData.append("password", password);
+
+        const response = await fetch("/token", {
+          method: "POST",
+          body: formData
+        });
+
+        if (!response.ok) {
+          throw new Error("用户名或密码错误");
+        }
+
+        const data = await response.json();
+        currentUser = data.username;
+
+        // 连接 WebSocket
+        connectWebSocket(data.access_token);
+
+      } catch (error) {
+        errorDiv.textContent = error.message;
+        errorDiv.classList.add("show");
+        loginBtn.disabled = false;
+        loginBtn.textContent = "登录";
+      }
+    }
+
+    // 连接 WebSocket
+    function connectWebSocket(token) {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const host = window.location.hostname;
+      const port = window.location.port ? `:${window.location.port}` : "";
+      ws = new WebSocket(`${protocol}//${host}${port}/ws`);
+
+      ws.onopen = async () => {
+        // 发送认证信息
+        await ws.send(JSON.stringify({
+          token: token,
+          encryption_key: encryptionKey
+        }));
+
+        // 切换到聊天界面
+        document.getElementById("auth-forms").style.display = "none";
+        document.getElementById("chat-app").style.display = "flex";
+        document.getElementById("status").classList.add("connected");
+
+        // 显示退出按钮
+        document.getElementById("logout-btn").style.display = "block";
+      };
+
+      ws.onmessage = (e) => {
+        const d = JSON.parse(e.data);
+        const chatDiv = document.getElementById("chat");
+        const msgDiv = document.createElement("div");
+
+        if (d.type === "connected") {
+          document.getElementById("status").textContent = "✓ 已连接到服务器";
+          return;
+        }
+
+        if (d.type === "error") {
+          document.getElementById("status").textContent = "✗ " + d.message;
+          return;
+        }
+
+        msgDiv.className = "msg";
+        const sender = d.sender || "系统";
+        const isMine = sender === currentUser;
+
+        if (d.type === "system") {
+          msgDiv.className += " system";
+          const decryptedMsg = decrypt(d.message, encryptionKey);
+          msgDiv.innerHTML = `<div class="msg-time">${new Date(d.time*1000).toLocaleTimeString()}</div>${decryptedMsg}`;
+        } else if (d.type === "message") {
+          msgDiv.className += isMine ? " mine" : " other";
+          const decryptedMsg = decrypt(d.message, encryptionKey);
+          msgDiv.innerHTML = `
+            <div class="msg-sender">${sender}</div>
+            ${decryptedMsg}
+            <div class="msg-time">${new Date(d.time*1000).toLocaleTimeString()}</div>
+          `;
+        }
+
+        chatDiv.appendChild(msgDiv);
+        chatDiv.scrollTop = chatDiv.scrollHeight;
+      };
+
+      ws.onclose = () => {
+        document.getElementById("status").classList.remove("connected");
+        document.getElementById("status").textContent = "✗ 连接已断开";
+      };
+
+      ws.onerror = () => {
+        document.getElementById("status").textContent = "✗ 连接错误";
+      };
+    }
+
+    // 发送消息
+    function send() {
+      const input = document.getElementById("message-input");
+      const message = input.value.trim();
+
+      if (message && ws && ws.readyState === WebSocket.OPEN) {
+        const encryptedMsg = encrypt(message, encryptionKey);
+        ws.send(JSON.stringify({ message: encryptedMsg }));
+        input.value = "";
+      }
+    }
+
+    // 回车发送
+    document.getElementById("message-input").addEventListener("keypress", (e) => {
+      if (e.key === "Enter") {
+        send();
+      }
+    });
+
+    // 回车登录/注册
+    document.getElementById("login-password").addEventListener("keypress", (e) => {
+      if (e.key === "Enter") {
+        login();
+      }
+    });
+
+    document.getElementById("reg-password-confirm").addEventListener("keypress", (e) => {
+      if (e.key === "Enter") {
+        register();
+      }
+    });
+
+    // 退出登录
+    function logout() {
+      if (confirm("确定要退出吗？")) {
+        // 关闭WebSocket连接
+        if (ws) {
+          ws.close();
+        }
+        // 清理状态
+        currentUser = null;
+        encryptionKey = null;
+        // 显示登录表单
+        document.getElementById("chat-app").style.display = "none";
+        document.getElementById("auth-forms").style.display = "flex";
+        document.getElementById("login-form").classList.add("active");
+        document.getElementById("register-form").classList.remove("active");
+        // 清空聊天记录
+        document.getElementById("chat").innerHTML = "";
+        document.getElementById("message-input").value = "";
+        // 隐藏退出按钮
+        document.getElementById("logout-btn").style.display = "none";
+      }
+    }
+  </script>
+</body>
+</html>
