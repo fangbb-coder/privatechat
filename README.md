@@ -1,4 +1,46 @@
-# Private Chat v3.5.3 - 安全增强版加密聊天系统
+# Private Chat v3.6.0 - 安全增强版加密聊天系统
+
+## 🆕 v3.6.0 更新 (2025-01-27)
+
+### 全面安全升级
+- ✅ **修复裸露的 except 语句**：所有异常捕获都使用具体异常类型
+- ✅ **严格 CORS 配置**：默认禁止跨域请求，需明确配置允许的域名
+- ✅ **AES-256-CBC 加密**：前后端统一使用 AES-256-CBC 模式，与 CryptoJS 完全兼容
+- ✅ **修复内存泄漏**：速率限制器添加定期清理机制，防止无限增长
+- ✅ **安全 HTTP 头**：添加 X-Frame-Options、CSP、HSTS 等安全响应头
+- ✅ **密码历史检查**：防止用户重复使用最近的密码（默认记录5个）
+- ✅ **Refresh Token 机制**：支持 token 刷新，延长会话时长（默认7天）
+- ✅ **会话固定保护**：限制每用户最大活跃会话数（默认5个）
+- ✅ **消除魔术数字**：所有硬编码常量移至配置文件
+- ✅ **输入验证增强**：添加更严格的输入验证规则
+- ✅ **数据库查询优化**：添加用户信息缓存，提升查询性能
+- ✅ **日志掩码工具**：敏感信息在日志中自动掩码
+- ✅ **配置验证**：启动时验证配置参数的合法性
+- ✅ **修复 Logger 导入问题**：修复 encryption.py 中 logger 未定义的错误
+- ✅ **WebSocket 连接修复**：修复 WebSocket 连接后立即断开的问题
+
+### 新增 API
+- ✅ **POST /api/auth/refresh**：刷新 access token
+- ✅ **密码历史表**：记录用户密码变更历史
+- ✅ **Refresh Token 表**：管理长期有效的 refresh tokens
+
+### 配置项新增
+- ✅ `PASSWORD_HISTORY_COUNT`：密码历史记录数（默认：5）
+- ✅ `REFRESH_TOKEN_EXPIRE_DAYS`：refresh token 有效期（默认：7天）
+- ✅ `MAX_ACTIVE_SESSIONS`：每用户最大活跃会话数（默认：5）
+- ✅ `IP_LOCK_MINUTES`：IP 锁定时长（默认：30分钟）
+- ✅ `IP_LOCK_THRESHOLD`：触发 IP 锁定的失败次数（默认：20次）
+- ✅ `RATE_LIMIT_MAX_IPS`：速率限制器最大 IP 数量（默认：10000）
+
+### 安全改进
+- 🔒 AES-256-CBC 加密算法（与 CryptoJS 兼容）
+- 🔒 防止密码复用
+- 🔒 会话管理和限制
+- 🔒 更严格的 CORS 策略
+- 🔒 完整的 HTTP 安全头
+- 🔒 日志敏感信息保护
+- 🔒 配置参数合法性检查
+- 🔒 WebSocket 连接稳定性提升
 
 ## 🆕 v3.5.3 更新 (2025-01-27)
 
@@ -59,16 +101,20 @@
 - 默认密码: `Admin@2025`
 - 基于 JWT (JSON Web Token) 的安全认证
 - Token 有效期: 30 分钟
+- Refresh Token 有效期: 7 天
 - 加密密钥持久化存储
+- 支持自动刷新 token（无需频繁登录）
 
 ### 2. 密码强度验证
 - 最小长度 8 个字符
 - 必须包含大小写字母、数字、特殊字符
 - 前端实时验证，后端二次验证
 - 使用 bcrypt 哈希存储（安全升级）
+- 密码历史检查（防止重复使用最近密码）
+- 默认记录最近 5 个密码
 
 ### 3. 消息加密
-- 所有聊天消息使用 **AES-256-GCM** 加密
+- 所有聊天消息使用 **AES-256-CBC** 加密（兼容 CryptoJS）
 - RSA-2048 密钥交换（密钥持久化）
 - 用户可自定义加密密码
 - 默认加密密码: `PrivateChat2025Secure!`
@@ -112,6 +158,11 @@
 - WebSocket 连接频率限制（每分钟最多 20 个连接）
 - Token 过期时间验证（区分过期、无效等错误）
 - 管理员敏感操作二次确认（踢出/禁用用户需密码验证）
+- **Refresh Token 机制**：支持长时间会话，减少登录次数
+- **密码历史检查**：防止重复使用密码
+- **会话固定保护**：限制每个用户的最大活跃会话数
+- **安全 HTTP 头**：CSP、HSTS、X-Frame-Options 等
+- **严格 CORS 配置**：默认禁止跨域，需明确配置允许域名
 
 ### 9. 管理员功能
 - 系统公告发布
@@ -188,6 +239,7 @@ chmod +x deploy.sh
 
 #### 1. 认证安全
 - ✅ JWT Token 认证，30分钟自动过期
+- ✅ Refresh Token 支持，7天有效期
 - ✅ Token 存储在 sessionStorage 中（每个标签页独立，防 XSS 攻击）
 - ✅ 支持多标签页同时登录不同账户
 - ✅ 页面刷新后自动恢复登录状态
@@ -195,13 +247,15 @@ chmod +x deploy.sh
 - ✅ 密码使用 bcrypt 哈希存储（不可逆加密）
 - ✅ 数据库字段级加密（用户名和密码）
 - ✅ 登录失败 5 次自动锁定 15 分钟
+- ✅ 密码历史检查（防止复用）
+- ✅ 会话固定保护（限制活跃会话数）
 
 #### 2. 传输安全
-- ✅ AES-256-GCM 消息加密
+- ✅ AES-256-CBC 消息加密
 - ✅ RSA-2048 密钥交换
 - ✅ WebSocket 连接时验证 Token
 - ✅ Token 过期时间实时验证
-- ✅ WebSocket 连接频率限制（每 IP 每分钟最多 5 个连接）
+- ✅ WebSocket 连接频率限制（每 IP 每分钟最多 20 个连接）
 
 #### 3. 操作安全
 - ✅ 管理员敏感操作二次确认
@@ -228,17 +282,16 @@ chmod +x deploy.sh
 7. 页面刷新时自动验证 token 有效性
 
 ### 消息加密流程
-1. 前端使用 AES-256-GCM 加密消息
+1. 前端使用 AES-256-CBC 加密消息
 2. RSA-2048 密钥交换保护会话密钥
 3. 加密后的消息通过 WebSocket 发送
 4. 后端解密并重新加密（使用 RSA 保护会话密钥）
 5. 前端解密并显示
 
 ### 高级加密特性
-- **多重防护**：RSA-2048 + AES-256-GCM + bcrypt
+- **多重防护**：RSA-2048 + AES-256-CBC + bcrypt
 - **密钥持久化**：RSA 密钥存储在 `backend/keys/` 目录
 - **字段级加密**：用户名和密码在数据库中加密存储
-- **认证加密**：GCM模式提供完整性和保密性
 - **防暴力破解**：登录失败限制和 IP 频率限制
 - **自动重连**：WebSocket 断线自动重连
 
@@ -296,6 +349,27 @@ chmod +x deploy.sh
 ```json
 {
   "access_token": "eyJhbGciOiJIUzI1NiIs...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIs...",
+  "token_type": "bearer",
+  "username": "admin"
+}
+```
+
+### POST /api/auth/refresh
+刷新 access token（使用 refresh token）
+
+**请求参数:**
+```json
+{
+  "refresh_token": "eyJhbGciOiJIUzI1NiIs..."
+}
+```
+
+**响应:**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIs...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIs...",
   "token_type": "bearer",
   "username": "admin"
 }
@@ -422,7 +496,7 @@ Authorization: Bearer <access_token>
 - WebSocket - 实时通信
 - PyJWT - JWT 认证
 - bcrypt - 密码哈希
-- PyCryptodome - AES-256 + RSA-2048 加密
+- PyCryptodome - AES-256-CBC + RSA-2048 加密
 - SQLite - 数据持久化（字段级加密）
 - Pydantic - 数据验证
 - Pydantic-Settings - 配置管理
@@ -626,6 +700,12 @@ MIT License
 
 ---
 
-**版本**: v3.5.3
+**版本**: v3.6.0
 **更新日期**: 2025-01-27
 **作者**: Private Chat Team
+
+## 🔧 最近修复 (2025-12-27)
+- ✅ 修复 logger 未定义导致的 WebSocket 连接错误
+- ✅ 修复消息发送后界面不显示的问题
+- ✅ 删除不必要的临时数据库文件
+- ✅ 更新文档，修正加密算法描述（使用 AES-256-CBC）

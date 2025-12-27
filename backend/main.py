@@ -24,6 +24,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPExcept
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import OAuth2PasswordBearer
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -38,7 +43,7 @@ import json
 
 # 导入自定义模块
 from config import settings
-from logger import get_logger
+from logger import setup_logger, get_logger
 from utils import (
     AESEncryptor,
     RSAKeyManager,
@@ -47,7 +52,8 @@ from utils import (
     LoginAttemptTracker,
     IPRateLimiter,
     WSConnectionRateLimiter,
-    DatabaseEncryptor
+    DatabaseEncryptor,
+    mask_sensitive_data
 )
 from models.user import (
     UserRegister,
@@ -55,6 +61,7 @@ from models.user import (
     UserChangePassword,
     UserInfo,
     TokenResponse,
+    RefreshTokenRequest,
     Message,
     MessageRecall,
     OnlineUser,
@@ -63,8 +70,8 @@ from models.user import (
 )
 
 # 初始化日志
-logger = get_logger()
-logger.info("Private Chat v3.5 启动中...")
+logger = setup_logger(settings)
+logger.info("Private Chat v3.6 启动中...")
 
 # ==================== FastAPI 应用初始化 ====================
 app = FastAPI(
@@ -72,6 +79,67 @@ app = FastAPI(
     version=settings.app_version,
     description="安全的私有加密聊天系统 - 支持 AES-256 加密、JWT 认证、消息撤回等功能"
 )
+
+# ==================== CORS 配置 ====================
+# 配置 CORS 中间件
+allowed_origins = settings.allowed_origins if settings.allowed_origins else []
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+    expose_headers=["Content-Range", "X-Total-Count"],
+    max_age=600,
+)
+
+# ==================== 安全 HTTP 头中间件 ====================
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """添加安全 HTTP 响应头"""
+
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response = await call_next(request)
+
+        # 安全 HTTP 头
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+        # 内容安全策略 (CSP)
+        # 允许内联脚本（用于消息加密/解密）
+        csp = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; "
+            "font-src 'self' data:; "
+            "connect-src 'self' ws: wss:; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'; "
+            "frame-ancestors 'none';"
+        )
+        response.headers["Content-Security-Policy"] = csp
+
+        # 缓存控制
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+
+        return response
+
+# 添加安全头中间件（在生产环境）
+if settings.environment != "development":
+    app.add_middleware(SecurityHeadersMiddleware)
+
+# 添加受信任主机中间件（生产环境）
+if settings.environment == "production":
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=["*"]  # 生产环境应该配置具体的主机列表
+    )
 
 # 挂载静态文件目录
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
@@ -95,14 +163,17 @@ logger.info(f"RSA 密钥已加载/生成，密钥长度: {settings.rsa_key_size}
 
 # ==================== 用户数据库 ====================
 class UserDB:
-    """用户数据库管理 - 使用 SQLite 持久化存储 + 字段级加密"""
+    """用户数据库管理 - 使用 SQLite 持久化存储 + 字段级加密 + 缓存优化"""
 
     def __init__(self, db_path: str = "./data/users.db"):
         self.db_path = db_path
         self.encryptor = DatabaseEncryptor()
+        self._user_cache: Dict[str, dict] = {}  # 用户名到用户信息的缓存
+        self._username_to_encrypted: Dict[str, str] = {}  # 用户名到加密用户名的映射缓存
         self._ensure_db_directory()
         self._init_db()
         self._ensure_default_admin()
+        self._build_cache()  # 构建缓存
 
     def _ensure_db_directory(self):
         """确保数据库目录存在"""
@@ -130,8 +201,29 @@ class UserDB:
                     created_at TEXT NOT NULL
                 )
             """)
+            # 创建密码历史表
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS password_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL,
+                    hashed_password TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(username, id)
+                )
+            """)
+            # 创建 refresh token 表
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS refresh_tokens (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    is_revoked INTEGER DEFAULT 0
+                )
+            """)
             conn.commit()
-            logger.info("用户数据库初始化完成（敏感字段已加密）")
+            logger.info("用户数据库初始化完成（敏感字段已加密，密码历史已启用，refresh token 已启用）")
 
     def _ensure_default_admin(self):
         """确保默认管理员账户存在"""
@@ -146,7 +238,8 @@ class UserDB:
                     if decrypted_username == "admin":
                         has_admin = True
                         break
-                except:
+                except ValueError as e:
+                    logger.debug(f"解密用户名失败: {e}")
                     continue
 
             if not has_admin:
@@ -161,6 +254,8 @@ class UserDB:
                 )
                 conn.commit()
                 logger.info("默认管理员账户已创建 - 用户名: admin, 密码: Admin@2025（已加密存储）")
+                # 更新缓存
+                self._build_cache()
 
     def add_user(self, username: str, hashed_password: str):
         """添加用户"""
@@ -176,28 +271,72 @@ class UserDB:
             conn.commit()
             logger.info(f"新用户注册: {username}")
 
-    def get_user(self, username: str) -> Optional[dict]:
-        """获取用户信息"""
+    def _build_cache(self):
+        """构建用户缓存以提高查询性能"""
         with self._get_connection() as conn:
-            # 由于用户名已加密，需要遍历所有用户找到匹配的
+            rows = conn.execute("SELECT * FROM users").fetchall()
+            for row in rows:
+                try:
+                    decrypted_username = self.encryptor.decrypt(row["username"])
+                    encrypted_username = row["username"]
+                    # 构建缓存
+                    self._username_to_encrypted[decrypted_username] = encrypted_username
+                    self._user_cache[decrypted_username] = {
+                        "username": decrypted_username,
+                        "hashed_password": self.encryptor.decrypt(row["hashed_password"]),
+                        "is_admin": bool(row["is_admin"]),
+                        "is_disabled": bool(row["is_disabled"]),
+                        "created_at": datetime.fromisoformat(row["created_at"]),
+                        "_encrypted_username": encrypted_username  # 保存加密用户名用于更新操作
+                    }
+                except Exception as e:
+                    logger.warning(f"构建缓存时解密失败: {e}")
+                    continue
+            logger.info(f"用户缓存构建完成，缓存用户数: {len(self._user_cache)}")
+
+    def _update_cache(self, username: str):
+        """更新缓存中的用户信息"""
+        user = self._get_user_from_db(username)
+        if user:
+            self._user_cache[username] = user
+            self._username_to_encrypted[username] = user["_encrypted_username"]
+        elif username in self._user_cache:
+            del self._user_cache[username]
+            del self._username_to_encrypted[username]
+
+    def _get_user_from_db(self, username: str) -> Optional[dict]:
+        """从数据库获取用户信息（不使用缓存）"""
+        with self._get_connection() as conn:
             rows = conn.execute("SELECT * FROM users").fetchall()
             for row in rows:
                 try:
                     decrypted_username = self.encryptor.decrypt(row["username"])
                     if decrypted_username == username:
-                        # 找到匹配的用户，解密密码哈希
                         return {
                             "username": decrypted_username,
                             "hashed_password": self.encryptor.decrypt(row["hashed_password"]),
                             "is_admin": bool(row["is_admin"]),
                             "is_disabled": bool(row["is_disabled"]),
-                            "created_at": datetime.fromisoformat(row["created_at"])
+                            "created_at": datetime.fromisoformat(row["created_at"]),
+                            "_encrypted_username": row["username"]
                         }
                 except Exception as e:
-                    # 解密失败，跳过该记录
                     logger.warning(f"解密用户数据失败: {str(e)}")
                     continue
             return None
+
+    def get_user(self, username: str) -> Optional[dict]:
+        """获取用户信息（优先从缓存获取）"""
+        # 先尝试从缓存获取
+        if username in self._user_cache:
+            return self._user_cache[username]
+
+        # 缓存中不存在，从数据库获取并更新缓存
+        user = self._get_user_from_db(username)
+        if user:
+            self._user_cache[username] = user
+            self._username_to_encrypted[username] = user["_encrypted_username"]
+        return user
 
     def is_disabled(self, username: str) -> bool:
         """检查用户是否被禁用"""
@@ -211,67 +350,263 @@ class UserDB:
 
     def disable_user(self, username: str, disabled: bool = True):
         """禁用/启用用户"""
+        encrypted_username = self._username_to_encrypted.get(username)
+        if not encrypted_username:
+            logger.warning(f"禁用用户失败: 用户不存在 - {username}")
+            return
+
         with self._get_connection() as conn:
-            # 遍历找到匹配的用户
-            rows = conn.execute("SELECT * FROM users").fetchall()
-            for row in rows:
-                try:
-                    decrypted_username = self.encryptor.decrypt(row["username"])
-                    if decrypted_username == username:
-                        # 使用数据库中存储的加密用户名来更新
-                        conn.execute(
-                            "UPDATE users SET is_disabled = ? WHERE username = ?",
-                            (1 if disabled else 0, row["username"])
-                        )
-                        conn.commit()
-                        action = "禁用" if disabled else "启用"
-                        logger.warning(f"用户已{action}: {username}")
-                        return
-                except Exception as e:
-                    logger.warning(f"禁用用户时解密失败: {str(e)}")
-                    continue
+            conn.execute(
+                "UPDATE users SET is_disabled = ? WHERE username = ?",
+                (1 if disabled else 0, encrypted_username)
+            )
+            conn.commit()
+            action = "禁用" if disabled else "启用"
+            logger.warning(f"用户已{action}: {username}")
+            # 更新缓存
+            self._update_cache(username)
 
     def delete_user(self, username: str):
         """删除用户"""
+        encrypted_username = self._username_to_encrypted.get(username)
+        if not encrypted_username:
+            logger.warning(f"删除用户失败: 用户不存在 - {username}")
+            return
+
         with self._get_connection() as conn:
-            # 遍历找到匹配的用户并删除
-            rows = conn.execute("SELECT * FROM users").fetchall()
-            for row in rows:
-                try:
-                    decrypted_username = self.encryptor.decrypt(row["username"])
-                    if decrypted_username == username:
-                        # 使用数据库中存储的加密用户名来删除
-                        conn.execute("DELETE FROM users WHERE username = ?", (row["username"],))
-                        conn.commit()
-                        logger.warning(f"用户已删除: {username}")
-                        return
-                except Exception as e:
-                    logger.warning(f"删除用户时解密失败: {str(e)}")
-                    continue
+            conn.execute("DELETE FROM users WHERE username = ?", (encrypted_username,))
+            conn.commit()
+            logger.warning(f"用户已删除: {username}")
+            # 更新缓存
+            if username in self._user_cache:
+                del self._user_cache[username]
+            if username in self._username_to_encrypted:
+                del self._username_to_encrypted[username]
 
     def change_password(self, username: str, new_hashed_password: str):
-        """修改密码"""
+        """修改密码（带密码历史检查）"""
+        # 检查密码历史
+        if self.is_password_in_history(username, new_hashed_password):
+            logger.warning(f"用户尝试使用历史密码: {username}")
+            raise ValueError("不能使用最近使用过的密码")
+
+        encrypted_username = self._username_to_encrypted.get(username)
+        if not encrypted_username:
+            logger.warning(f"修改密码失败: 用户不存在 - {username}")
+            return
+
         # 加密新密码
         encrypted_password = self.encryptor.encrypt(new_hashed_password)
 
         with self._get_connection() as conn:
-            # 遍历找到匹配的用户并更新密码
-            rows = conn.execute("SELECT * FROM users").fetchall()
+            # 先添加旧密码到历史记录
+            user = self.get_user(username)
+            if user:
+                old_password = user["hashed_password"]
+                encrypted_old_password = self.encryptor.encrypt(old_password)
+                conn.execute(
+                    "INSERT INTO password_history (username, hashed_password, created_at) VALUES (?, ?, ?)",
+                    (encrypted_username, encrypted_old_password, datetime.now().isoformat())
+                )
+
+                # 更新用户密码
+                conn.execute(
+                    "UPDATE users SET hashed_password = ? WHERE username = ?",
+                    (encrypted_password, encrypted_username)
+                )
+
+                # 清理过期的密码历史（保留最近的 N 个）
+                self._cleanup_password_history(username)
+
+                conn.commit()
+                logger.info(f"用户修改密码: {username}")
+                # 更新缓存
+                self._update_cache(username)
+
+    def is_password_in_history(self, username: str, new_hashed_password: str) -> bool:
+        """检查新密码是否在历史记录中"""
+        with self._get_connection() as conn:
+            # 加密新密码用于比较
+            encrypted_new_password = self.encryptor.encrypt(new_hashed_password)
+
+            # 获取该用户最近的密码历史
+            rows = conn.execute("""
+                SELECT hashed_password FROM password_history
+                ORDER BY created_at DESC LIMIT ?
+            """, (settings.password_history_count,)).fetchall()
+
+            for row in rows:
+                try:
+                    # 解密历史密码
+                    old_password = self.encryptor.decrypt(row["hashed_password"])
+                    # 比较密码哈希（bcrypt 是通过 verify 来比较的）
+                    if PasswordHasher.verify_password(new_hashed_password, old_password):
+                        return True
+                except Exception as e:
+                    logger.debug(f"检查密码历史时解密失败: {e}")
+                    continue
+
+            return False
+
+    def _cleanup_password_history(self, username: str):
+        """清理过期的密码历史记录"""
+        with self._get_connection() as conn:
+            # 加密用户名用于查询
+            encrypted_username = self.encryptor.encrypt(username)
+
+            # 获取所有历史记录
+            rows = conn.execute("""
+                SELECT id, username FROM password_history
+                ORDER BY created_at DESC
+            """).fetchall()
+
+            # 找到该用户的历史记录并清理
+            user_history_ids = []
             for row in rows:
                 try:
                     decrypted_username = self.encryptor.decrypt(row["username"])
                     if decrypted_username == username:
-                        # 使用数据库中存储的加密用户名和新加密的密码来更新
-                        conn.execute(
-                            "UPDATE users SET hashed_password = ? WHERE username = ?",
-                            (encrypted_password, row["username"])
-                        )
-                        conn.commit()
-                        logger.info(f"用户修改密码: {username}")
-                        return
-                except Exception as e:
-                    logger.warning(f"修改密码时解密失败: {str(e)}")
+                        user_history_ids.append(row["id"])
+                except Exception:
                     continue
+
+            # 保留最近的 N 个，删除其余的
+            if len(user_history_ids) > settings.password_history_count:
+                ids_to_delete = user_history_ids[settings.password_history_count:]
+                for history_id in ids_to_delete:
+                    conn.execute("DELETE FROM password_history WHERE id = ?", (history_id,))
+                logger.debug(f"清理密码历史: {username}, 删除 {len(ids_to_delete)} 条记录")
+
+    def save_refresh_token(self, username: str, token: str) -> str:
+        """保存 refresh token 到数据库（带会话数量限制）"""
+        # 检查活跃会话数
+        active_sessions = self._count_active_refresh_tokens(username)
+        if active_sessions >= settings.max_active_sessions:
+            # 撤销最旧的 token
+            self._revoke_oldest_refresh_token(username)
+            logger.warning(f"达到最大会话数限制，撤销最旧的会话: {username}")
+
+        encrypted_username = self.encryptor.encrypt(username)
+        encrypted_token = self.encryptor.encrypt(token)
+        expires_at = datetime.now() + timedelta(days=settings.refresh_token_expire_days)
+
+        with self._get_connection() as conn:
+            conn.execute(
+                "INSERT INTO refresh_tokens (username, token, expires_at, created_at) VALUES (?, ?, ?, ?)",
+                (encrypted_username, encrypted_token, expires_at.isoformat(), datetime.now().isoformat())
+            )
+            conn.commit()
+            logger.debug(f"保存 refresh token: {username}, 活跃会话数: {active_sessions + 1}")
+            return token
+
+    def _count_active_refresh_tokens(self, username: str) -> int:
+        """统计用户的活跃 refresh tokens 数量"""
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT username FROM refresh_tokens WHERE is_revoked = 0").fetchall()
+            count = 0
+            for row in rows:
+                try:
+                    decrypted_username = self.encryptor.decrypt(row["username"])
+                    if decrypted_username == username:
+                        count += 1
+                except Exception:
+                    continue
+            return count
+
+    def _revoke_oldest_refresh_token(self, username: str):
+        """撤销用户最旧的 refresh token"""
+        with self._get_connection() as conn:
+            rows = conn.execute("""
+                SELECT id, username FROM refresh_tokens
+                WHERE is_revoked = 0
+                ORDER BY created_at ASC
+                LIMIT 1
+            """).fetchall()
+
+            for row in rows:
+                try:
+                    decrypted_username = self.encryptor.decrypt(row["username"])
+                    if decrypted_username == username:
+                        conn.execute("UPDATE refresh_tokens SET is_revoked = 1 WHERE id = ?", (row["id"],))
+                        conn.commit()
+                        logger.debug(f"撤销最旧的 refresh token: {username}")
+                        return
+                except Exception:
+                    continue
+
+    def get_refresh_token(self, token: str) -> Optional[dict]:
+        """验证并获取 refresh token 信息"""
+        encrypted_token = self.encryptor.encrypt(token)
+
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT * FROM refresh_tokens WHERE token = ?", (encrypted_token,)).fetchone()
+            if not row:
+                return None
+
+            try:
+                decrypted_username = self.encryptor.decrypt(row["username"])
+                decrypted_token = self.encryptor.decrypt(row["token"])
+
+                # 检查是否已撤销
+                if row["is_revoked"]:
+                    logger.warning(f"Refresh token 已被撤销: {decrypted_username}")
+                    return None
+
+                # 检查是否过期
+                expires_at = datetime.fromisoformat(row["expires_at"])
+                if datetime.now() > expires_at:
+                    logger.warning(f"Refresh token 已过期: {decrypted_username}")
+                    # 删除过期的 token
+                    conn.execute("DELETE FROM refresh_tokens WHERE id = ?", (row["id"],))
+                    conn.commit()
+                    return None
+
+                return {
+                    "username": decrypted_username,
+                    "token": decrypted_token,
+                    "expires_at": expires_at
+                }
+            except Exception as e:
+                logger.warning(f"解密 refresh token 失败: {e}")
+                return None
+
+    def revoke_refresh_token(self, token: str):
+        """撤销 refresh token"""
+        encrypted_token = self.encryptor.encrypt(token)
+
+        with self._get_connection() as conn:
+            conn.execute("UPDATE refresh_tokens SET is_revoked = 1 WHERE token = ?", (encrypted_token,))
+            conn.commit()
+            logger.debug(f"撤销 refresh token")
+
+    def revoke_all_refresh_tokens(self, username: str):
+        """撤销用户的所有 refresh tokens"""
+        encrypted_username = self.encryptor.encrypt(username)
+
+        with self._get_connection() as conn:
+            # 找到该用户的所有 refresh tokens
+            rows = conn.execute("SELECT id, username FROM refresh_tokens").fetchall()
+            for row in rows:
+                try:
+                    decrypted_username = self.encryptor.decrypt(row["username"])
+                    if decrypted_username == username:
+                        conn.execute("UPDATE refresh_tokens SET is_revoked = 1 WHERE id = ?", (row["id"],))
+                except Exception:
+                    continue
+            conn.commit()
+            logger.info(f"撤销用户的所有 refresh tokens: {username}")
+
+    def cleanup_expired_refresh_tokens(self):
+        """清理过期的 refresh tokens"""
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT id, expires_at FROM refresh_tokens WHERE is_revoked = 0").fetchall()
+            now = datetime.now()
+            for row in rows:
+                expires_at = datetime.fromisoformat(row["expires_at"])
+                if now > expires_at:
+                    conn.execute("DELETE FROM refresh_tokens WHERE id = ?", (row["id"],))
+            conn.commit()
+            logger.debug("清理过期的 refresh tokens")
 
     def get_all_users(self) -> List[dict]:
         """获取所有用户（解密敏感字段）"""
@@ -345,7 +680,7 @@ ALGORITHM = "HS256"
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """创建 JWT token"""
+    """创建 JWT access token"""
     to_encode = data.copy()
 
     if expires_delta:
@@ -353,7 +688,16 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     else:
         expire = datetime.utcnow() + timedelta(minutes=settings.access_token_expire_minutes)
 
-    to_encode.update({"exp": expire})
+    to_encode.update({"exp": expire, "type": "access"})
+    encoded_jwt = jwt.encode(to_encode, settings.secret_key, algorithm=ALGORITHM)
+    return encoded_jwt
+
+
+def create_refresh_token(data: dict) -> str:
+    """创建 JWT refresh token（更长的有效期）"""
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(days=settings.refresh_token_expire_days)
+    to_encode.update({"exp": expire, "type": "refresh", "jti": str(uuid.uuid4())})
     encoded_jwt = jwt.encode(to_encode, settings.secret_key, algorithm=ALGORITHM)
     return encoded_jwt
 
@@ -606,13 +950,99 @@ async def login(form_data: UserLogin, request: Request):
     stats["total_logins"] += 1
     logger.info(f"登录成功: {username}")
 
-    # 创建 token
+    # 创建 tokens
     access_token = create_access_token(
         data={"sub": username}
     )
+    refresh_token = create_refresh_token(
+        data={"sub": username}
+    )
+
+    # 保存 refresh token 到数据库
+    user_db.save_refresh_token(username, refresh_token)
 
     return TokenResponse(
         access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        username=username
+    )
+
+
+@app.post("/api/auth/refresh", response_model=TokenResponse)
+@limiter.limit("10/minute")
+async def refresh_token(request: Request, refresh_request: RefreshTokenRequest):
+    """
+    刷新 access token
+    使用 refresh token 获取新的 access token
+    """
+    ip = get_remote_address(request)
+    logger.debug(f"刷新 token 请求 - IP: {ip}")
+
+    # 验证 refresh token
+    token_info = user_db.get_refresh_token(refresh_request.refresh_token)
+    if not token_info:
+        logger.warning(f"刷新 token 失败 - refresh token 无效或已过期: {ip}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效的 refresh token"
+        )
+
+    username = token_info["username"]
+
+    # 验证 JWT refresh token
+    try:
+        payload = jwt.decode(
+            refresh_request.refresh_token,
+            settings.secret_key,
+            algorithms=[ALGORITHM]
+        )
+        if payload.get("type") != "refresh":
+            logger.warning(f"刷新 token 失败 - token 类型错误: {username}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="无效的 refresh token"
+            )
+    except jwt.ExpiredSignatureError:
+        logger.warning(f"刷新 token 失败 - refresh token 已过期: {username}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="refresh token 已过期，请重新登录"
+        )
+    except jwt.InvalidTokenError:
+        logger.warning(f"刷新 token 失败 - refresh token 无效: {username}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效的 refresh token"
+        )
+
+    # 检查用户是否被禁用
+    if user_db.is_disabled(username):
+        logger.warning(f"刷新 token 失败 - 用户已被禁用: {username}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="账户已被禁用"
+        )
+
+    # 创建新的 access token
+    new_access_token = create_access_token(
+        data={"sub": username}
+    )
+
+    # 可选：创建新的 refresh token（轮换 refresh token）
+    # 撤销旧的 refresh token
+    user_db.revoke_refresh_token(refresh_request.refresh_token)
+    # 创建新的 refresh token
+    new_refresh_token = create_refresh_token(
+        data={"sub": username}
+    )
+    user_db.save_refresh_token(username, new_refresh_token)
+
+    logger.info(f"刷新 token 成功: {username}")
+
+    return TokenResponse(
+        access_token=new_access_token,
+        refresh_token=new_refresh_token,
         token_type="bearer",
         username=username
     )
@@ -712,7 +1142,8 @@ async def disable_user(username: str, current_user: dict = Depends(get_current_u
                 await client["ws"].close(code=status.WS_1008_POLICY_VIOLATION, reason="账户已被管理员禁用")
                 clients.remove(client)
                 kicked = True
-            except:
+            except Exception as e:
+                logger.debug(f"关闭WebSocket连接失败: {e}")
                 pass
 
     if kicked:
@@ -937,7 +1368,8 @@ async def chat(ws: WebSocket):
                         "time": int(time.time()),
                         "sender": "系统"
                     })
-                except:
+                except Exception as e:
+                    logger.debug(f"发送系统消息失败: {e}")
                     pass
 
         # 发送在线用户列表
@@ -985,7 +1417,8 @@ async def chat(ws: WebSocket):
                                 "message_id": message_id,
                                 "time": int(time.time())
                             })
-                        except:
+                        except Exception as e:
+                            logger.debug(f"发送撤回通知失败: {e}")
                             pass
 
                     logger.info(f"消息撤回: {message_id} by {username}")
@@ -1025,7 +1458,7 @@ async def chat(ws: WebSocket):
                 "is_read": False
             }
 
-            # 加密消息
+            # 加密消息（使用 CBC 模式与前端兼容）
             encrypted_msg = AESEncryptor.encrypt(decrypted_msg, encryption_key)
 
             # 广播消息
@@ -1063,16 +1496,18 @@ async def chat(ws: WebSocket):
         # 通知其他用户
         if username:
             system_msg = f"用户 {username} 已离开聊天"
-            encrypted_system_msg = AESEncryptor.encrypt(system_msg, settings.default_encryption_key)
             for client in clients:
                 try:
+                    # 使用每个用户自己的加密密钥来加密系统消息（CBC 模式）
+                    encrypted_system_msg = AESEncryptor.encrypt(system_msg, client["encryption_key"])
                     await client["ws"].send_json({
                         "type": "system",
                         "message": encrypted_system_msg,
                         "time": int(time.time()),
                         "sender": "系统"
                     })
-                except:
+                except Exception as e:
+                    logger.debug(f"发送断开连接通知失败: {e}")
                     pass
 
             # 发送在线用户列表

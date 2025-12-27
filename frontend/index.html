@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self'; object-src 'none'; base-uri 'self';"/>
-  <meta name="version" content="v3.5.3-2025-01-27"/>
+  <meta name="version" content="v3.6.0-2025-01-27"/>
   <title>Private Chat</title>
   <style>
     :root {
@@ -1379,31 +1379,56 @@
       text.style.color = strengthColor;
     }
 
-    // AES-256 加密
+    // AES-256-CBC 加密（使用 CryptoJS）
     function encrypt(message, key) {
       try {
-        const keyHash = CryptoJS.SHA256(key).toString();
+        // 生成密钥：SHA256(password) -> hex 字符串
+        const keyHash = CryptoJS.SHA256(key).toString(CryptoJS.enc.Hex);
+        console.log('加密密钥 (hex):', keyHash);
+
+        // 生成随机 IV (16 bytes)
         const iv = CryptoJS.lib.WordArray.random(16);
+        console.log('IV (hex):', iv.toString(CryptoJS.enc.Hex));
+
+        // 使用 CBC 模式加密
         const encrypted = CryptoJS.AES.encrypt(message, CryptoJS.enc.Hex.parse(keyHash), {
           iv: iv,
           mode: CryptoJS.mode.CBC,
           padding: CryptoJS.pad.Pkcs7
         });
+        console.log('加密后 ciphertext (hex):', encrypted.ciphertext.toString(CryptoJS.enc.Hex));
+
+        // 组合: IV(16) + ciphertext
         const combined = iv.clone().concat(encrypted.ciphertext);
-        return CryptoJS.enc.Base64.stringify(combined);
+        console.log('组合后 (hex):', combined.toString(CryptoJS.enc.Hex));
+
+        const result = CryptoJS.enc.Base64.stringify(combined);
+        console.log('最终结果 (base64):', result);
+
+        return result;
       } catch (e) {
         console.error("加密失败:", e);
         return message;
       }
     }
 
-    // AES-256 解密
+    // AES-256-CBC 解密（使用 CryptoJS）
     function decrypt(ciphertext, key) {
       try {
-        const keyHash = CryptoJS.SHA256(key).toString();
+        // 生成密钥：SHA256(password) -> hex 字符串
+        const keyHash = CryptoJS.SHA256(key).toString(CryptoJS.enc.Hex);
+        console.log('解密密钥 (hex):', keyHash);
+
+        // 解析 Base64
         const combined = CryptoJS.enc.Base64.parse(ciphertext);
+        console.log('解析后 (hex):', combined.toString(CryptoJS.enc.Hex));
+
+        // 提取 IV (16 bytes = 4 words) 和 ciphertext
         const iv = CryptoJS.lib.WordArray.create(combined.words.slice(0, 4));
         const encrypted = CryptoJS.lib.WordArray.create(combined.words.slice(4));
+        console.log('IV (hex):', iv.toString(CryptoJS.enc.Hex));
+
+        // 使用 CBC 模式解密
         const decrypted = CryptoJS.AES.decrypt(
           { ciphertext: encrypted },
           CryptoJS.enc.Hex.parse(keyHash),
@@ -1414,6 +1439,7 @@
           }
         );
         const result = decrypted.toString(CryptoJS.enc.Utf8);
+        console.log('解密结果:', result);
 
         if (!result || result.length === 0 || result.trim().length === 0) {
           return "加密消息：密码不同，无法解密消息";

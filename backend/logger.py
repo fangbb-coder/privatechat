@@ -5,11 +5,11 @@
 import sys
 from loguru import logger
 from pathlib import Path
-from config import settings
 
 
-def setup_logger():
+def setup_logger(settings):
     """配置日志系统"""
+    settings = settings  # 接收 settings 参数
 
     # 移除默认的处理器
     logger.remove()
@@ -40,7 +40,7 @@ def setup_logger():
         settings.log_file,
         format=log_format,
         level=settings.log_level,
-        rotation=f"{settings.log_file_max_size} MB",
+        rotation=f"{settings.log_file_max_size_mb} MB",
         retention=f"{settings.log_file_backup_count} days",
         compression="zip",
         backtrace=True,
@@ -54,7 +54,7 @@ def setup_logger():
         str(error_log_path),
         format=log_format,
         level="ERROR",
-        rotation=f"{settings.log_file_max_size} MB",
+        rotation=f"{settings.log_file_max_size_mb} MB",
         retention=f"{settings.log_file_backup_count} days",
         compression="zip",
         backtrace=True,
@@ -69,10 +69,6 @@ def setup_logger():
     return logger
 
 
-# 创建日志实例
-app_logger = setup_logger()
-
-
 def get_logger():
-    """获取日志实例"""
-    return app_logger
+    """获取日志实例（向后兼容）"""
+    return logger

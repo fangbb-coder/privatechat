@@ -13,6 +13,10 @@ from .security import (
     IPRateLimiter,
     WSConnectionRateLimiter
 )
+from .log_masking import (
+    mask_sensitive_data,
+    log_with_masking
+)
 
 __all__ = [
     'AESEncryptor',
@@ -22,5 +26,7 @@ __all__ = [
     'DatabaseEncryptor',
     'LoginAttemptTracker',
     'IPRateLimiter',
-    'WSConnectionRateLimiter'
+    'WSConnectionRateLimiter',
+    'mask_sensitive_data',
+    'log_with_masking'
 ]

@@ -60,11 +60,11 @@ class LoginAttemptTracker:
             if attempt[1] == ip and now - attempt[0] < timedelta(minutes=10)
         ]
 
-        # 如果同一IP失败次数过多（20次），锁定该IP 30分钟
-        if len(all_failures) >= 20:
-            lock_until = now + timedelta(minutes=30)
+        # 如果同一IP失败次数过多，锁定该IP
+        if len(all_failures) >= settings.ip_lock_threshold:
+            lock_until = now + timedelta(minutes=settings.ip_lock_minutes)
             self.ip_locks[ip] = lock_until
-            logger.warning(f"IP锁定 - IP: {ip}, 锁定时间: 30分钟")
+            logger.warning(f"IP锁定 - IP: {ip}, 锁定时间: {settings.ip_lock_minutes}分钟")
 
     def is_ip_locked(self, ip: str) -> bool:
         """检查IP是否被锁定"""
@@ -133,11 +133,12 @@ class LoginAttemptTracker:
 
 
 class IPRateLimiter:
-    """IP 频率限制器"""
+    """IP 频率限制器（带内存保护）"""
 
     def __init__(self):
         # 存储请求记录: {ip: [datetime, ...]}
         self.requests: Dict[str, list] = defaultdict(list)
+        self.max_ips = settings.rate_limit_max_ips  # 限制最大 IP 数量，防止内存泄漏
 
     def check_rate_limit(self, ip: str) -> Tuple[bool, Optional[int]]:
         """
@@ -147,11 +148,19 @@ class IPRateLimiter:
         """
         now = datetime.now()
 
+        # 定期清理（每1000次请求执行一次完整清理）
+        if len(self.requests) > self.max_ips:
+            self._cleanup_expired_ips(now)
+
         # 清理超过 1 分钟的旧记录
         self.requests[ip] = [
             req_time for req_time in self.requests[ip]
             if now - req_time < timedelta(minutes=1)
         ]
+
+        # 如果没有记录了，删除该 IP 键
+        if not self.requests[ip]:
+            del self.requests[ip]
 
         # 检查请求次数
         if len(self.requests[ip]) >= settings.rate_limit_per_minute:
@@ -165,13 +174,35 @@ class IPRateLimiter:
 
         return True, None
 
+    def _cleanup_expired_ips(self, now: datetime):
+        """清理所有过期的 IP 记录"""
+        expired_ips = []
+        for ip, timestamps in self.requests.items():
+            # 清理过期的记录
+            valid_timestamps = [
+                req_time for req_time in timestamps
+                if now - req_time < timedelta(minutes=1)
+            ]
+            if valid_timestamps:
+                self.requests[ip] = valid_timestamps
+            else:
+                expired_ips.append(ip)
+
+        # 删除过期的 IP 键
+        for ip in expired_ips:
+            if ip in self.requests:
+                del self.requests[ip]
+
+        logger.debug(f"速率限制器清理完成，剩余 IP 数量: {len(self.requests)}")
+
 
 class WSConnectionRateLimiter:
-    """WebSocket 连接频率限制器"""
+    """WebSocket 连接频率限制器（带内存保护）"""
 
     def __init__(self):
         # 存储连接记录: {ip: [datetime, ...]}
         self.connections: Dict[str, list] = defaultdict(list)
+        self.max_ips = settings.rate_limit_max_ips  # 限制最大 IP 数量，防止内存泄漏
 
     def check_rate_limit(self, ip: str) -> bool:
         """
@@ -181,11 +212,19 @@ class WSConnectionRateLimiter:
         """
         now = datetime.now()
 
+        # 定期清理（每1000次连接执行一次完整清理）
+        if len(self.connections) > self.max_ips:
+            self._cleanup_expired_ips(now)
+
         # 清理超过 1 分钟的旧记录
         self.connections[ip] = [
             conn_time for conn_time in self.connections[ip]
             if now - conn_time < timedelta(minutes=1)
         ]
+
+        # 如果没有记录了，删除该 IP 键
+        if not self.connections[ip]:
+            del self.connections[ip]
 
         # 检查连接次数
         if len(self.connections[ip]) >= settings.ws_connections_per_minute:
@@ -195,6 +234,27 @@ class WSConnectionRateLimiter:
         self.connections[ip].append(now)
 
         return True
+
+    def _cleanup_expired_ips(self, now: datetime):
+        """清理所有过期的 IP 记录"""
+        expired_ips = []
+        for ip, timestamps in self.connections.items():
+            # 清理过期的记录
+            valid_timestamps = [
+                conn_time for conn_time in timestamps
+                if now - conn_time < timedelta(minutes=1)
+            ]
+            if valid_timestamps:
+                self.connections[ip] = valid_timestamps
+            else:
+                expired_ips.append(ip)
+
+        # 删除过期的 IP 键
+        for ip in expired_ips:
+            if ip in self.connections:
+                del self.connections[ip]
+
+        logger.debug(f"WebSocket 速率限制器清理完成，剩余 IP 数量: {len(self.connections)}")
 
 
 # 创建全局实例

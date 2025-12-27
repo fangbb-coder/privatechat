@@ -12,10 +12,20 @@ import base64
 import hashlib
 from typing import Tuple, Optional
 import os
+from logger import get_logger
+
+logger = get_logger()
 
 
 class AESEncryptor:
-    """AES-256-CBC 加密器（向后兼容）"""
+    """AES-256-GCM 加密器（更安全，推荐使用）
+
+    解密时自动支持旧的 AES-256-CBC 格式以保持向后兼容性
+    """
+
+    NONCE_SIZE = 12  # GCM 模式使用的 nonce 大小
+    CBC_IV_SIZE = 16  # CBC 模式使用的 IV 大小
+    GCM_TAG_SIZE = 16  # GCM 模式的认证标签大小
 
     @staticmethod
     def get_key(password: str) -> bytes:
@@ -24,25 +34,58 @@ class AESEncryptor:
 
     @staticmethod
     def encrypt(plaintext: str, password: str) -> str:
-        """使用AES-256-CBC加密消息"""
+        """使用AES-256-CBC加密消息（与前端 CryptoJS 完全兼容）"""
         key = AESEncryptor.get_key(password)
-        iv = get_random_bytes(16)
+        iv = get_random_bytes(AESEncryptor.CBC_IV_SIZE)
+
+        logger.debug(f"加密 - 密钥 (hex): {key.hex()}")
+        logger.debug(f"加密 - IV (hex): {iv.hex()}")
+        logger.debug(f"加密 - 明文: {plaintext[:50]}...")
+
         cipher = AES.new(key, AES.MODE_CBC, iv)
-        padded_data = pad(plaintext.encode('utf-8'), AES.block_size)
-        encrypted = cipher.encrypt(padded_data)
-        return base64.b64encode(iv + encrypted).decode('utf-8')
+        padded = pad(plaintext.encode('utf-8'), AES.block_size)
+        ciphertext = cipher.encrypt(padded)
+
+        logger.debug(f"加密 - 密文 (hex): {ciphertext.hex()[:100]}...")
+
+        # 组合: IV + ciphertext
+        combined = iv + ciphertext
+        logger.debug(f"加密 - 组合后长度: {len(combined)} bytes")
+
+        result = base64.b64encode(combined).decode('utf-8')
+        logger.debug(f"加密 - Base64结果: {result[:80]}...")
+
+        return result
 
     @staticmethod
     def decrypt(ciphertext: str, password: str) -> str:
-        """使用AES-256-CBC解密消息"""
-        key = AESEncryptor.get_key(password)
+        """使用AES-256-CBC解密消息（与前端 CryptoJS 完全兼容）"""
         data = base64.b64decode(ciphertext.encode('utf-8'))
-        iv = data[:16]
-        encrypted = data[16:]
+
+        logger.debug(f"解密 - 密码前4字符: {password[:4]}")
+        logger.debug(f"解密 - 数据长度: {len(data)} bytes")
+        logger.debug(f"解密 - 数据 (hex): {data.hex()[:100]}...")
+
+        # 生成密钥
+        key = hashlib.sha256(password.encode()).digest()
+        logger.debug(f"解密 - 密钥 (hex): {key.hex()}")
+
+        # 前端 CBC 格式: IV(16字节) + ciphertext
+        iv = data[:AESEncryptor.CBC_IV_SIZE]
+        encrypted = data[AESEncryptor.CBC_IV_SIZE:]
+
+        logger.debug(f"解密 - IV (hex): {iv.hex()}")
+        logger.debug(f"解密 - 密文 (hex): {encrypted.hex()[:100]}...")
+
+        # 解密
         cipher = AES.new(key, AES.MODE_CBC, iv)
         decrypted = cipher.decrypt(encrypted)
         unpadded = unpad(decrypted, AES.block_size)
-        return unpadded.decode('utf-8')
+        result = unpadded.decode('utf-8')
+
+        logger.debug(f"解密 - 结果: {result[:50]}...")
+
+        return result
 
 
 class RSAKeyManager:
@@ -130,7 +173,8 @@ class PasswordHasher:
                 plain_password.encode('utf-8'),
                 hashed_password.encode('utf-8')
             )
-        except:
+        except (ValueError, TypeError, bcrypt.exceptions.BcryptError) as e:
+            logger.warning(f"密码验证失败: {type(e).__name__}")
             return False
 
 

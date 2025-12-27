@@ -20,14 +20,40 @@ class UserRegister(BaseModel):
 
 class UserLogin(BaseModel):
     """用户登录数据模型"""
-    username: str
-    password: str
+    username: str = Field(..., min_length=1, max_length=20, description="用户名")
+    password: str = Field(..., min_length=1, max_length=64, description="密码")
+
+    @validator('username')
+    def username_must_not_be_empty(cls, v):
+        if not v or v.strip() == "":
+            raise ValueError("用户名不能为空")
+        if not re.match(r"^[a-zA-Z0-9_]+$", v):
+            raise ValueError("用户名只能包含字母、数字和下划线")
+        return v
+
+    @validator('password')
+    def password_must_not_be_empty(cls, v):
+        if not v or v.strip() == "":
+            raise ValueError("密码不能为空")
+        return v
 
 
 class UserChangePassword(BaseModel):
     """修改密码数据模型"""
-    old_password: str = Field(..., min_length=1, description="旧密码")
+    old_password: str = Field(..., min_length=1, max_length=64, description="旧密码")
     new_password: str = Field(..., min_length=8, max_length=64, description="新密码")
+
+    @validator('old_password')
+    def old_password_must_not_be_empty(cls, v):
+        if not v or v.strip() == "":
+            raise ValueError("旧密码不能为空")
+        return v
+
+    @validator('new_password')
+    def new_passwords_must_be_different(cls, v, values):
+        if 'old_password' in values and v == values['old_password']:
+            raise ValueError("新密码不能与旧密码相同")
+        return v
 
 
 class UserInfo(BaseModel):
@@ -40,8 +66,14 @@ class UserInfo(BaseModel):
 class TokenResponse(BaseModel):
     """Token 响应模型"""
     access_token: str
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
     username: str
+
+
+class RefreshTokenRequest(BaseModel):
+    """刷新 Token 请求模型"""
+    refresh_token: str
 
 
 class Message(BaseModel):
@@ -69,7 +101,7 @@ class OnlineUser(BaseModel):
 
 class SystemAnnouncement(BaseModel):
     """系统公告模型"""
-    message: str
+    message: str = Field(..., min_length=1, max_length=1000, description="公告内容")
     type: str = "announcement"
 
 
