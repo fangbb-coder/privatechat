@@ -22,7 +22,6 @@ class UserLogin(BaseModel):
     """用户登录数据模型"""
     username: str
     password: str
-    remember_me: bool = False
 
 
 class UserChangePassword(BaseModel):
@@ -43,7 +42,6 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     username: str
-    remember_me: Optional[bool] = False
 
 
 class Message(BaseModel):

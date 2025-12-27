@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     login_lock_minutes: int = 15
     rate_limit_per_minute: int = 60
 
+    # ==================== WebSocket 安全配置 ====================
+    ws_connections_per_minute: int = 20  # 每分钟最多 20 个连接
+
     # ==================== 密码强度配置 ====================
     min_password_length: int = 8
     max_password_length: int = 64

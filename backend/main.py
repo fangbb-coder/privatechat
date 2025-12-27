@@ -1,5 +1,5 @@
 """
-Private Chat v3.3 - 增强版加密聊天系统
+Private Chat v3.4 - 增强版加密聊天系统
 新功能：
 - 密码强度检查
 - 登录失败限制
@@ -41,6 +41,7 @@ from utils import (
     PasswordValidator,
     LoginAttemptTracker,
     IPRateLimiter,
+    WSConnectionRateLimiter,
     DatabaseEncryptor
 )
 from models.user import (
@@ -332,25 +333,20 @@ stats = {
 # 登录跟踪器
 login_tracker = LoginAttemptTracker()
 ip_rate_limiter = IPRateLimiter()
+ws_connection_rate_limiter = WSConnectionRateLimiter()
 
 # ==================== JWT Token 管理 ====================
 ALGORITHM = "HS256"
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None, remember_me: bool = False) -> str:
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """创建 JWT token"""
     to_encode = data.copy()
-
-    # 如果选择记住我，使用更长的过期时间
-    if remember_me:
-        expire_minutes = settings.remember_token_expire_minutes
-    else:
-        expire_minutes = settings.access_token_expire_minutes
 
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=expire_minutes)
+        expire = datetime.utcnow() + timedelta(minutes=settings.access_token_expire_minutes)
 
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, settings.secret_key, algorithm=ALGORITHM)
@@ -359,22 +355,45 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None, r
 
 def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
     """从 JWT token 获取当前用户"""
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
         if username is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token中未包含用户信息",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    except jwt.ExpiredSignatureError:
+        logger.warning("JWT Token签名过期")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token已过期，请重新登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.InvalidTokenError:
+        logger.warning("JWT Token无效")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token无效，请重新登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except JWTError as e:
+        logger.warning(f"JWT Token验证失败: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token验证失败，请重新登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     user = user_db.get_user(username)
     if user is None:
-        raise credentials_exception
+        logger.warning(f"用户不存在: {username}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户不存在，请重新登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     # 记录用户权限信息（调试）
     logger.info(f"用户 {username} 登录 - is_admin: {user.get('is_admin')}, is_disabled: {user.get('is_disabled')}")
@@ -506,7 +525,6 @@ async def login(form_data: UserLogin, request: Request):
     用户登录
     - 登录失败次数限制
     - IP 频率限制
-    - 支持记住我功能
     """
     ip = get_remote_address(request)
     username = form_data.username
@@ -566,15 +584,13 @@ async def login(form_data: UserLogin, request: Request):
 
     # 创建 token
     access_token = create_access_token(
-        data={"sub": username},
-        remember_me=form_data.remember_me if hasattr(form_data, 'remember_me') else False
+        data={"sub": username}
     )
 
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
-        username=username,
-        remember_me=form_data.remember_me if hasattr(form_data, 'remember_me') else False
+        username=username
     )
 
 
@@ -819,6 +835,12 @@ async def chat(ws: WebSocket):
         auth_data = await ws.receive_json()
         token = auth_data.get("token")
         encryption_key = auth_data.get("encryption_key", settings.default_encryption_key)
+
+        # 检查连接频率
+        client_ip = ws.client.host
+        if not ws_connection_rate_limiter.check_rate_limit(client_ip):
+            await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="连接频率过高，请稍后再试")
+            return
 
         # 验证 JWT token
         try:

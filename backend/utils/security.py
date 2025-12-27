@@ -112,9 +112,41 @@ class IPRateLimiter:
         return True, None
 
 
+class WSConnectionRateLimiter:
+    """WebSocket 连接频率限制器"""
+
+    def __init__(self):
+        # 存储连接记录: {ip: [datetime, ...]}
+        self.connections: Dict[str, list] = defaultdict(list)
+
+    def check_rate_limit(self, ip: str) -> bool:
+        """
+        检查 IP 是否超过连接频率限制
+
+        返回: (是否允许连接)
+        """
+        now = datetime.now()
+
+        # 清理超过 1 分钟的旧记录
+        self.connections[ip] = [
+            conn_time for conn_time in self.connections[ip]
+            if now - conn_time < timedelta(minutes=1)
+        ]
+
+        # 检查连接次数
+        if len(self.connections[ip]) >= settings.ws_connections_per_minute:
+            return False
+
+        # 记录本次连接
+        self.connections[ip].append(now)
+
+        return True
+
+
 # 创建全局实例
 login_tracker = LoginAttemptTracker()
 ip_rate_limiter = IPRateLimiter()
+ws_connection_rate_limiter = WSConnectionRateLimiter()
 
 
 def get_login_tracker() -> LoginAttemptTracker:
@@ -125,3 +157,8 @@ def get_login_tracker() -> LoginAttemptTracker:
 def get_ip_rate_limiter() -> IPRateLimiter:
     """获取 IP 限制器实例"""
     return ip_rate_limiter
+
+
+def get_ws_connection_rate_limiter() -> WSConnectionRateLimiter:
+    """获取 WebSocket 连接限制器实例"""
+    return ws_connection_rate_limiter

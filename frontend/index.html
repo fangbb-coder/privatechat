@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <meta name="version" content="v3.3-2025-01-26"/>
+  <meta name="version" content="v3.4-2025-01-27"/>
   <title>Private Chat</title>
   <style>
     :root {
@@ -55,6 +55,7 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background: #f5f5f5;
       color: #333;
+      overflow-x: hidden; /* 防止水平滚动条 */
     }
 
     [data-theme="dark"] body {
@@ -70,6 +71,7 @@
       flex-direction: column;
       background: #f5f5f5;
       position: relative;
+      overflow: hidden; /* 防止app容器本身出现滚动条 */
     }
 
     [data-theme="dark"] #app {
@@ -445,6 +447,8 @@
       display: none;
       flex-direction: column;
       height: 100%;
+      flex: 1; /* 占据剩余空间，让footer保持在底部 */
+      overflow: hidden; /* 让内部的#chat处理滚动 */
     }
 
     #status {
@@ -464,6 +468,7 @@
       flex: 1;
       padding: 15px;
       overflow-y: auto;
+      overflow-x: hidden; /* 防止消息内容导致水平滚动 */
       -webkit-overflow-scrolling: touch;
       background: #f5f5f5;
       display: flex;
@@ -586,6 +591,7 @@
       border-top: 1px solid var(--border-color);
       padding: 12px 15px;
       background: #f7f7f7;
+      flex-shrink: 0; /* 防止footer被压缩，始终保持在底部 */
     }
 
     [data-theme="dark"] footer {
@@ -931,6 +937,7 @@
         padding: 8px;
         flex-direction: row;
         align-items: center;
+        flex-shrink: 0; /* 防止footer被压缩，始终保持在底部 */
       }
 
       #message-input {
@@ -1032,7 +1039,7 @@
     <!-- 认证表单 -->
     <div id="auth-forms">
       <div style="text-align: center; color: var(--text-secondary); font-size: 12px; padding: 10px;">
-        Private Chat v3.3 (2025-01-26) - 安全增强版
+        Private Chat v3.4 (2025-01-27) - 多标签页独立登录
       </div>
 
       <!-- 登录表单 -->
@@ -1062,10 +1069,6 @@
           <div class="encryption-warning">
             ⚠️ 重要：如果要看到其他用户的消息，必须使用相同的加密密码！
           </div>
-        </div>
-        <div class="form-group checkbox-group">
-          <input type="checkbox" id="remember-me" />
-          <label for="remember-me" class="checkbox-label">记住我（7天免登录）</label>
         </div>
         <button onclick="login()" id="login-btn">登录</button>
         <div class="toggle-link">
@@ -1191,6 +1194,7 @@
   <script>
     let ws = null;
     let currentUser = null;
+    let authToken = null;  // 当前用户的访问令牌
     let encryptionKey = null;
     const defaultEncryptionKey = "PrivateChat2025Secure!";
     let reconnectAttempts = 0;
@@ -1226,19 +1230,19 @@
       // 检查网络状态
       checkNetworkStatus();
 
-      // 检查是否有保存的登录状态
-      const savedUser = localStorage.getItem('current_user');
-      const savedToken = savedUser ? localStorage.getItem(`token_${savedUser}`) : null;
-      const savedEncryptionKey = localStorage.getItem(`encryption_key_${savedUser}`);
-
-      if (savedUser && savedToken) {
-        // 恢复登录状态
-        currentUser = savedUser;
-        encryptionKey = savedEncryptionKey || defaultEncryptionKey;
-
-        // 验证 token 是否有效（通过尝试连接 WebSocket）
-        showLoading();
-        connectWebSocket(savedToken);
+      // 尝试从 sessionStorage 恢复登录状态和聊天记录
+      const savedUsername = sessionStorage.getItem('current_user');
+      if (savedUsername) {
+        const savedToken = sessionStorage.getItem(`token_${savedUsername}`);
+        const savedEncryptionKey = sessionStorage.getItem(`encryption_key_${savedUsername}`);
+        if (savedToken) {
+          currentUser = savedUsername;
+          authToken = savedToken;
+          encryptionKey = savedEncryptionKey || defaultEncryptionKey;
+          // 恢复聊天记录
+          restoreMessages();
+          connectWebSocket(savedToken);
+        }
       }
 
       window.addEventListener('online', () => {
@@ -1566,10 +1570,6 @@
       const username = document.getElementById("login-username").value.trim();
       const password = document.getElementById("login-password").value;
       encryptionKey = document.getElementById("login-encryption-key").value || defaultEncryptionKey;
-      const rememberMe = document.getElementById("remember-me").checked;
-
-      // 清除之前的 token（如果存在）
-      localStorage.removeItem(`token_${username}`);
 
       const errorDiv = document.getElementById("login-error");
       const loginBtn = document.getElementById("login-btn");
@@ -1587,8 +1587,7 @@
           },
           body: JSON.stringify({
             username: username,
-            password: password,
-            remember_me: rememberMe
+            password: password
           })
         });
 
@@ -1599,13 +1598,14 @@
 
         const data = await response.json();
         currentUser = data.username;
+        authToken = data.access_token;
 
-        // 保存 access token 到 localStorage（使用用户名作为 key，支持多用户同时登录）
-        localStorage.setItem(`token_${currentUser}`, data.access_token);
+        // 保存 access token 到 sessionStorage（每个标签页独立存储，支持多标签页同时登录不同账户）
+        sessionStorage.setItem(`token_${currentUser}`, data.access_token);
         // 保存当前登录用户名
-        localStorage.setItem('current_user', currentUser);
+        sessionStorage.setItem('current_user', currentUser);
         // 保存加密密钥（用于刷新后恢复）
-        localStorage.setItem(`encryption_key_${currentUser}`, encryptionKey);
+        sessionStorage.setItem(`encryption_key_${currentUser}`, encryptionKey);
 
         // 连接 WebSocket
         connectWebSocket(data.access_token);
@@ -1659,6 +1659,10 @@
 
           // 隐藏加载遮罩
           hideLoading();
+
+          // 确保滚动到底部（特别是刷新后恢复聊天记录时）
+          setTimeout(() => scrollToBottom(), 100);
+
           return;
         }
 
@@ -1739,6 +1743,10 @@
         }
 
         chatDiv.appendChild(msgDiv);
+
+        // 保存消息到 sessionStorage
+        saveMessage(d);
+
         // 自动滚动到底部
         scrollToBottom();
       };
@@ -1771,6 +1779,11 @@
             console.log(`尝试重连 (${reconnectAttempts}/${maxReconnectAttempts})...`);
             reconnectWebSocket();
           }, reconnectDelay);
+        } else {
+          // 重连次数用尽，重置登录按钮状态
+          const loginBtn = document.getElementById("login-btn");
+          loginBtn.disabled = false;
+          loginBtn.textContent = "登录";
         }
       };
 
@@ -1778,15 +1791,107 @@
         hideLoading();
         document.getElementById("status").textContent = "✗ 连接错误";
         console.error("WebSocket 错误:", error);
+
+        // 重置登录按钮状态
+        const loginBtn = document.getElementById("login-btn");
+        loginBtn.disabled = false;
+        loginBtn.textContent = "登录";
       };
     }
 
+    // 保存消息到 sessionStorage
+    function saveMessage(msgData) {
+      const chatHistory = getChatHistory();
+      chatHistory.push(msgData);
+      // 限制最多保存 500 条消息
+      if (chatHistory.length > 500) {
+        chatHistory.shift();
+      }
+      sessionStorage.setItem('chat_history', JSON.stringify(chatHistory));
+    }
+
+    // 获取聊天历史
+    function getChatHistory() {
+      try {
+        const history = sessionStorage.getItem('chat_history');
+        return history ? JSON.parse(history) : [];
+      } catch (e) {
+        console.error('获取聊天历史失败:', e);
+        return [];
+      }
+    }
+
+    // 恢复聊天记录
+    function restoreMessages() {
+      const chatHistory = getChatHistory();
+      if (chatHistory.length === 0) return; // 没有历史消息就不恢复
+
+      const chatDiv = document.getElementById("chat");
+      chatHistory.forEach(d => {
+        const msgDiv = document.createElement("div");
+        msgDiv.className = "msg";
+        const sender = d.sender || "系统";
+        const isMine = sender === currentUser;
+        const messageId = d.message_id || '';
+
+        if (messageId) {
+          msgDiv.setAttribute('data-message-id', messageId);
+          messages[messageId] = {
+            id: messageId,
+            sender: sender,
+            time: d.time
+          };
+        }
+
+        if (d.type === "system") {
+          msgDiv.className += " system";
+          const decryptedMsg = decrypt(d.message, encryptionKey);
+          msgDiv.innerHTML = `<div class="msg-time">${new Date(d.time*1000).toLocaleTimeString()}</div>${decryptedMsg}`;
+        } else if (d.type === "message" || d.type === "announcement") {
+          // 公告消息特殊处理
+          if (d.type === "announcement") {
+            msgDiv.className += " announcement";
+          } else {
+            msgDiv.className += isMine ? " mine" : " other";
+          }
+
+          const decryptedMsg = decrypt(d.message, encryptionKey);
+
+          let recallBtn = '';
+          if (isMine && d.type === "message") {
+            recallBtn = `<button class="recall-btn" onclick="recallMessage('${messageId}')">撤回</button>`;
+          }
+
+          msgDiv.innerHTML = `
+            <div class="msg-sender">
+              <span>${sender}</span>
+              ${recallBtn}
+              <span class="msg-time">${new Date(d.time*1000).toLocaleTimeString()}</span>
+            </div>
+            <div class="msg-content">${decryptedMsg}</div>
+          `;
+        }
+
+        chatDiv.appendChild(msgDiv);
+      });
+
+      // 使用 requestAnimationFrame 确保DOM渲染完成后滚动到底部
+      requestAnimationFrame(() => {
+        scrollToBottom();
+      });
+    }
+
+    // 清除聊天历史
+    function clearChatHistory() {
+      sessionStorage.removeItem('chat_history');
+    }
+
+
     // 重连 WebSocket
     function reconnectWebSocket() {
-      if (currentUser && (!ws || ws.readyState === WebSocket.CLOSED)) {
-        // 需要重新获取 token
-        // 这里简化处理，实际应该存储 token
+      if (currentUser && authToken && (!ws || ws.readyState === WebSocket.CLOSED)) {
         console.log("重连中...");
+        connectWebSocket(authToken);
       }
     }
 
@@ -1883,7 +1988,7 @@
     // 加载用户列表
     async function loadUsers() {
       try {
-        const token = localStorage.getItem(`token_${currentUser}`);
+        const token = sessionStorage.getItem(`token_${currentUser}`);
         const response = await fetch('/api/admin/users', {
           headers: {
             'Authorization': `Bearer ${token}`
@@ -1927,7 +2032,7 @@
       if (!message) return;
 
       try {
-        const token = localStorage.getItem(`token_${currentUser}`);
+        const token = sessionStorage.getItem(`token_${currentUser}`);
         const response = await fetch('/api/admin/announcement', {
           method: 'POST',
           headers: {
@@ -1960,7 +2065,7 @@
       if (!confirm(`确定要禁用用户 "${username}" 吗？`)) return;
 
       try {
-        const token = localStorage.getItem(`token_${currentUser}`);
+        const token = sessionStorage.getItem(`token_${currentUser}`);
         const response = await fetch(`/api/admin/disable-user/${username}`, {
           method: 'POST',
           headers: {
@@ -1983,7 +2088,7 @@
     // 启用用户
     async function enableUser(username) {
       try {
-        const token = localStorage.getItem(`token_${currentUser}`);
+        const token = sessionStorage.getItem(`token_${currentUser}`);
         const response = await fetch(`/api/admin/enable-user/${username}`, {
           method: 'POST',
           headers: {
@@ -2014,7 +2119,7 @@
       if (!confirm(`确定要踢出用户 "${username}" 吗？`)) return;
 
       try {
-        const token = localStorage.getItem(`token_${currentUser}`);
+        const token = sessionStorage.getItem(`token_${currentUser}`);
         const response = await fetch(`/api/admin/kick/${username}`, {
           method: 'POST',
           headers: {
@@ -2154,7 +2259,12 @@
       btn.textContent = '修改中...';
 
       try {
-        const token = localStorage.getItem(`token_${currentUser}`);
+        const token = sessionStorage.getItem(`token_${currentUser}`);
+        if (!token) {
+          alert('登录已过期，请重新登录');
+          return;
+        }
+
         const response = await fetch('/api/user/change-password', {
           method: 'POST',
           headers: {
@@ -2171,6 +2281,10 @@
           alert('密码修改成功，请重新登录');
           closeChangePasswordModal();
           forceLogout(); // 强制退出，不需要确认
+        } else if (response.status === 401) {
+          // Token过期或无效，强制登出
+          alert('登录已过期，请重新登录');
+          forceLogout();
         } else {
           const errorData = await response.json();
           alert('修改失败: ' + errorData.detail);
@@ -2186,7 +2300,12 @@
     // 修改密码（保留旧函数以兼容）
     async function changePassword(oldPassword, newPassword) {
       try {
-        const token = localStorage.getItem(`token_${currentUser}`);
+        const token = sessionStorage.getItem(`token_${currentUser}`);
+        if (!token) {
+          alert('登录已过期，请重新登录');
+          return;
+        }
+
         const response = await fetch('/api/user/change-password', {
           method: 'POST',
           headers: {
@@ -2202,6 +2321,10 @@
         if (response.ok) {
           alert('密码修改成功，请重新登录');
           logout();
+        } else if (response.status === 401) {
+          // Token过期或无效，强制登出
+          alert('登录已过期，请重新登录');
+          forceLogout();
         } else {
           const errorData = await response.json();
           alert('修改失败: ' + errorData.detail);
@@ -2219,11 +2342,12 @@
       }
       // 清除当前用户的 token
       if (currentUser) {
-        localStorage.removeItem(`token_${currentUser}`);
+        sessionStorage.removeItem(`token_${currentUser}`);
+        sessionStorage.removeItem(`encryption_key_${currentUser}`);
       }
-      localStorage.removeItem('current_user');
-      localStorage.removeItem(`encryption_key_${currentUser}`);
+      sessionStorage.removeItem('current_user');
       currentUser = null;
+      authToken = null;
       encryptionKey = null;
       isAdmin = false;
 
@@ -2238,6 +2362,11 @@
       document.getElementById("admin-panel").classList.remove("show");
       document.getElementById("emoji-picker").classList.remove("show");
       document.getElementById("admin-btn").style.display = "none";
+
+      // 重置登录按钮状态
+      const loginBtn = document.getElementById("login-btn");
+      loginBtn.disabled = false;
+      loginBtn.textContent = "登录";
     }
 
     // 退出登录
@@ -2249,11 +2378,12 @@
         }
         // 清除当前用户的 token
         if (currentUser) {
-          localStorage.removeItem(`token_${currentUser}`);
+          sessionStorage.removeItem(`token_${currentUser}`);
+          sessionStorage.removeItem(`encryption_key_${currentUser}`);
         }
-        localStorage.removeItem('current_user');
-        localStorage.removeItem(`encryption_key_${currentUser}`);
+        sessionStorage.removeItem('current_user');
         currentUser = null;
+        authToken = null;
         encryptionKey = null;
         isAdmin = false;
 
@@ -2268,6 +2398,14 @@
         document.getElementById("admin-panel").classList.remove("show");
         document.getElementById("emoji-toggle").classList.remove("show");
         document.getElementById("admin-btn").style.display = "none";
+
+        // 重置登录按钮状态
+        const loginBtn = document.getElementById("login-btn");
+        loginBtn.disabled = false;
+        loginBtn.textContent = "登录";
+
+        // 清除聊天历史
+        clearChatHistory();
       }
     }
 

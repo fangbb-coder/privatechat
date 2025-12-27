@@ -10,7 +10,8 @@ from .encryption import (
 )
 from .security import (
     LoginAttemptTracker,
-    IPRateLimiter
+    IPRateLimiter,
+    WSConnectionRateLimiter
 )
 
 __all__ = [
@@ -20,5 +21,6 @@ __all__ = [
     'PasswordValidator',
     'DatabaseEncryptor',
     'LoginAttemptTracker',
-    'IPRateLimiter'
+    'IPRateLimiter',
+    'WSConnectionRateLimiter'
 ]
