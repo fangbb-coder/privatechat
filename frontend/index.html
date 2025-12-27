@@ -6,7 +6,8 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <meta name="version" content="v3.4-2025-01-27"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self'; object-src 'none'; base-uri 'self';"/>
+  <meta name="version" content="v3.5.3-2025-01-27"/>
   <title>Private Chat</title>
   <style>
     :root {
@@ -1039,7 +1040,7 @@
     <!-- 认证表单 -->
     <div id="auth-forms">
       <div style="text-align: center; color: var(--text-secondary); font-size: 12px; padding: 10px;">
-        Private Chat v3.4 (2025-01-27) - 多标签页独立登录
+        Private Chat v3.5.3 (2025-01-27) - 安全增强版
       </div>
 
       <!-- 登录表单 -->
@@ -1059,15 +1060,14 @@
           </div>
         </div>
         <div class="form-group">
-          <label>消息加密密码（可选）</label>
+          <label>消息加密密码 <span style="color: red;">*</span></label>
           <div class="password-input-wrapper">
-            <input id="login-encryption-key" type="password" placeholder="留空使用默认密码" />
+            <input id="login-encryption-key" type="password" placeholder="设置一个强密码" required />
             <button type="button" class="password-toggle-btn" onclick="togglePasswordVisibility('login-encryption-key', this)">👁️</button>
           </div>
-          <div class="form-hint">用于加密消息，默认: PrivateChat2025Secure!</div>
-          <div class="encryption-info">✓ AES-256 加密保护您的消息</div>
+          <div class="form-hint">用于加密聊天消息，所有用户必须使用相同密码才能互相看到消息</div>
           <div class="encryption-warning">
-            ⚠️ 重要：如果要看到其他用户的消息，必须使用相同的加密密码！
+            ⚠️ 安全提醒：请记住此密码！丢失后无法恢复已发送的消息。
           </div>
         </div>
         <button onclick="login()" id="login-btn">登录</button>
@@ -1196,7 +1196,6 @@
     let currentUser = null;
     let authToken = null;  // 当前用户的访问令牌
     let encryptionKey = null;
-    const defaultEncryptionKey = "PrivateChat2025Secure!";
     let reconnectAttempts = 0;
     const maxReconnectAttempts = 5;
     const reconnectDelay = 3000;
@@ -1204,6 +1203,13 @@
     let isAdmin = false;
     let messages = {}; // 存储消息信息
     let currentTheme = localStorage.getItem('theme') || 'light';
+
+    // XSS防护函数
+    function escapeHTML(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
 
     // 常用表情
     const emojis = [
@@ -1235,13 +1241,16 @@
       if (savedUsername) {
         const savedToken = sessionStorage.getItem(`token_${savedUsername}`);
         const savedEncryptionKey = sessionStorage.getItem(`encryption_key_${savedUsername}`);
-        if (savedToken) {
+        if (savedToken && savedEncryptionKey) {
           currentUser = savedUsername;
           authToken = savedToken;
-          encryptionKey = savedEncryptionKey || defaultEncryptionKey;
+          encryptionKey = savedEncryptionKey;
           // 恢复聊天记录
           restoreMessages();
           connectWebSocket(savedToken);
+        } else {
+          // 如果没有保存的加密密钥，清除登录状态
+          sessionStorage.removeItem('current_user');
         }
       }
 
@@ -1569,10 +1578,25 @@
     async function login() {
       const username = document.getElementById("login-username").value.trim();
       const password = document.getElementById("login-password").value;
-      encryptionKey = document.getElementById("login-encryption-key").value || defaultEncryptionKey;
+      const inputEncryptionKey = document.getElementById("login-encryption-key").value.trim();
 
       const errorDiv = document.getElementById("login-error");
       const loginBtn = document.getElementById("login-btn");
+
+      // 验证加密密码
+      if (!inputEncryptionKey) {
+        errorDiv.textContent = "请设置消息加密密码";
+        errorDiv.classList.add("show");
+        return;
+      }
+
+      if (inputEncryptionKey.length < 8) {
+        errorDiv.textContent = "加密密码长度至少8位";
+        errorDiv.classList.add("show");
+        return;
+      }
+
+      encryptionKey = inputEncryptionKey;
 
       errorDiv.classList.remove("show");
       showLoading();
@@ -1716,7 +1740,7 @@
         if (d.type === "system") {
           msgDiv.className += " system";
           const decryptedMsg = decrypt(d.message, encryptionKey);
-          msgDiv.innerHTML = `<div class="msg-time">${new Date(d.time*1000).toLocaleTimeString()}</div>${decryptedMsg}`;
+          msgDiv.innerHTML = `<div class="msg-time">${new Date(d.time*1000).toLocaleTimeString()}</div>${escapeHTML(decryptedMsg)}`;
         } else if (d.type === "message" || d.type === "announcement") {
           // 公告消息特殊处理
           if (d.type === "announcement") {
@@ -1734,11 +1758,11 @@
 
           msgDiv.innerHTML = `
             <div class="msg-sender">
-              <span>${sender}</span>
+              <span>${escapeHTML(sender)}</span>
               ${recallBtn}
               <span class="msg-time">${new Date(d.time*1000).toLocaleTimeString()}</span>
             </div>
-            <div class="msg-content">${decryptedMsg}</div>
+            <div class="msg-content">${escapeHTML(decryptedMsg)}</div>
           `;
         }
 
@@ -1759,8 +1783,8 @@
         const reason = event.reason || "连接已断开";
         document.getElementById("status").textContent = "✗ " + reason;
 
-        // 检查是否是被动断开（被踢出或禁用）
-        if (reason.includes("踢出") || reason.includes("禁用") || event.code === 1008) {
+        // 检查是否是被动断开（被踢出、禁用或锁定）
+        if (reason.includes("踢出") || reason.includes("禁用") || reason.includes("锁定") || event.code === 1008) {
           alert(reason);
           forceLogout(); // 强制退出
           return;
@@ -1846,7 +1870,7 @@
         if (d.type === "system") {
           msgDiv.className += " system";
           const decryptedMsg = decrypt(d.message, encryptionKey);
-          msgDiv.innerHTML = `<div class="msg-time">${new Date(d.time*1000).toLocaleTimeString()}</div>${decryptedMsg}`;
+          msgDiv.innerHTML = `<div class="msg-time">${new Date(d.time*1000).toLocaleTimeString()}</div>${escapeHTML(decryptedMsg)}`;
         } else if (d.type === "message" || d.type === "announcement") {
           // 公告消息特殊处理
           if (d.type === "announcement") {
@@ -1864,11 +1888,11 @@
 
           msgDiv.innerHTML = `
             <div class="msg-sender">
-              <span>${sender}</span>
+              <span>${escapeHTML(sender)}</span>
               ${recallBtn}
               <span class="msg-time">${new Date(d.time*1000).toLocaleTimeString()}</span>
             </div>
-            <div class="msg-content">${decryptedMsg}</div>
+            <div class="msg-content">${escapeHTML(decryptedMsg)}</div>
           `;
         }
 

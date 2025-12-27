@@ -19,6 +19,8 @@ class LoginAttemptTracker:
         self.attempts: Dict[str, list] = defaultdict(list)
         # 存储锁定时间: {username: unlock_time}
         self.locked_until: Dict[str, datetime] = {}
+        # IP级别的锁定（防止同一IP暴力破解多个账户）
+        self.ip_locks: Dict[str, datetime] = {}
 
     def record_attempt(self, username: str, ip: str, success: bool):
         """记录登录尝试"""
@@ -31,7 +33,47 @@ class LoginAttemptTracker:
         else:
             # 登录失败，记录尝试
             self.attempts[username].append((datetime.now(), ip))
-            logger.warning(f"登录失败 - 用户: {username}, IP: {ip}")
+            logger.warning(f"登录失败 - 用户: {username}, IP: {ip}, 总失败次数: {len(self.attempts[username])}")
+
+            # 检查该IP是否有大量失败尝试（可能是暴力破解）
+            self._check_ip_lock(ip)
+
+    def _check_ip_lock(self, ip: str):
+        """检查IP级别的锁定"""
+        # 清理过期的IP锁定
+        now = datetime.now()
+        self.ip_locks = {
+            ip_addr: lock_time
+            for ip_addr, lock_time in self.ip_locks.items()
+            if now < lock_time
+        }
+
+        # 检查该IP是否已被锁定
+        if ip in self.ip_locks:
+            return
+
+        # 统计该IP的失败次数（跨所有用户）
+        all_failures = [
+            attempt
+            for attempts in self.attempts.values()
+            for attempt in attempts
+            if attempt[1] == ip and now - attempt[0] < timedelta(minutes=10)
+        ]
+
+        # 如果同一IP失败次数过多（20次），锁定该IP 30分钟
+        if len(all_failures) >= 20:
+            lock_until = now + timedelta(minutes=30)
+            self.ip_locks[ip] = lock_until
+            logger.warning(f"IP锁定 - IP: {ip}, 锁定时间: 30分钟")
+
+    def is_ip_locked(self, ip: str) -> bool:
+        """检查IP是否被锁定"""
+        if ip not in self.ip_locks:
+            return False
+        if datetime.now() > self.ip_locks[ip]:
+            del self.ip_locks[ip]
+            return False
+        return True
 
     def is_locked(self, username: str) -> Tuple[bool, Optional[int]]:
         """
@@ -42,13 +84,21 @@ class LoginAttemptTracker:
         if username not in self.locked_until:
             return False, None
 
-        if datetime.now() > self.locked_until[username]:
+        now = datetime.now()
+        lock_time = self.locked_until[username]
+
+        if now > lock_time:
             # 锁定已过期
             del self.locked_until[username]
             return False, None
 
-        # 计算剩余锁定时间（分钟）
-        remaining = int((self.locked_until[username] - datetime.now()).total_seconds() / 60)
+        # 计算剩余锁定时间（分钟），至少显示1分钟
+        remaining_seconds = (lock_time - now).total_seconds()
+        remaining = int(remaining_seconds / 60)
+        if remaining == 0:
+            remaining = 1  # 如果不满1分钟，至少显示1分钟
+
+        logger.info(f"账户已锁定: {username}, 剩余 {remaining} 分钟")
         return True, remaining
 
     def check_and_lock(self, username: str, ip: str) -> Tuple[bool, str]:
@@ -57,7 +107,11 @@ class LoginAttemptTracker:
 
         返回: (是否允许登录, 错误信息)
         """
-        # 检查是否已被锁定
+        # 首先检查IP是否被锁定
+        if self.is_ip_locked(ip):
+            return False, "您的IP已被暂时锁定，请稍后再试"
+
+        # 检查账户是否已被锁定
         is_locked, remaining = self.is_locked(username)
         if is_locked:
             return False, f"账户已被锁定，请 {remaining} 分钟后重试"
@@ -73,7 +127,7 @@ class LoginAttemptTracker:
             lock_until = datetime.now() + timedelta(minutes=settings.login_lock_minutes)
             self.locked_until[username] = lock_until
             logger.warning(f"账户锁定 - 用户: {username}, 锁定时间: {settings.login_lock_minutes}分钟")
-            return False, f"登录失败次数过多，账户已被锁定 {settings.login_lock_minutes} 分钟"
+            return False, "登录尝试次数过多，账户已锁定"
 
         return True, ""
 
@@ -147,18 +201,3 @@ class WSConnectionRateLimiter:
 login_tracker = LoginAttemptTracker()
 ip_rate_limiter = IPRateLimiter()
 ws_connection_rate_limiter = WSConnectionRateLimiter()
-
-
-def get_login_tracker() -> LoginAttemptTracker:
-    """获取登录跟踪器实例"""
-    return login_tracker
-
-
-def get_ip_rate_limiter() -> IPRateLimiter:
-    """获取 IP 限制器实例"""
-    return ip_rate_limiter
-
-
-def get_ws_connection_rate_limiter() -> WSConnectionRateLimiter:
-    """获取 WebSocket 连接限制器实例"""
-    return ws_connection_rate_limiter

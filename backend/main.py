@@ -1,9 +1,14 @@
 """
-Private Chat v3.4 - 增强版加密聊天系统
+Private Chat v3.5.3 - 安全增强版加密聊天系统
 新功能：
 - 密码强度检查
-- 登录失败限制
+- 登录失败限制（增强：IP级别锁定）
 - IP 频率限制
+- WebSocket Origin 验证
+- 消息加密密码强制设置
+- CSP 防护 XSS 攻击
+- JWT 密钥自动生成
+- 错误消息优化（区分账户禁用、锁定、密码错误）
 - 消息撤回
 - 在线用户列表
 - 管理员功能
@@ -59,7 +64,7 @@ from models.user import (
 
 # 初始化日志
 logger = get_logger()
-logger.info("Private Chat v3.3 启动中...")
+logger.info("Private Chat v3.5 启动中...")
 
 # ==================== FastAPI 应用初始化 ====================
 app = FastAPI(
@@ -361,28 +366,28 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
         if username is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token中未包含用户信息",
+                detail="无效的认证凭据",
                 headers={"WWW-Authenticate": "Bearer"},
             )
     except jwt.ExpiredSignatureError:
         logger.warning("JWT Token签名过期")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token已过期，请重新登录",
+            detail="认证已过期，请重新登录",
             headers={"WWW-Authenticate": "Bearer"},
         )
     except jwt.InvalidTokenError:
         logger.warning("JWT Token无效")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token无效，请重新登录",
+            detail="无效的认证凭据",
             headers={"WWW-Authenticate": "Bearer"},
         )
     except JWTError as e:
         logger.warning(f"JWT Token验证失败: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token验证失败，请重新登录",
+            detail="无效的认证凭据",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -391,18 +396,18 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
         logger.warning(f"用户不存在: {username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户不存在，请重新登录",
+            detail="无效的认证凭据",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
     # 记录用户权限信息（调试）
-    logger.info(f"用户 {username} 登录 - is_admin: {user.get('is_admin')}, is_disabled: {user.get('is_disabled')}")
+    logger.debug(f"用户 {username} 登录 - is_admin: {user.get('is_admin')}, is_disabled: {user.get('is_disabled')}")
 
     # 检查用户是否被禁用
     if user_db.is_disabled(username):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="用户已被禁用"
+            detail="账户已被禁用"
         )
 
     # 返回用户信息，包含 is_admin
@@ -491,7 +496,7 @@ async def register(user_data: UserRegister, request: Request):
         logger.warning(f"注册失败 - 用户名已存在: {user_data.username}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"用户名 '{user_data.username}' 已存在"
+            detail="用户名已被注册"
         )
 
     # 密码强度验证
@@ -519,7 +524,7 @@ async def register(user_data: UserRegister, request: Request):
 
 
 @app.post("/token", response_model=TokenResponse)
-@limiter.limit("10/minute")
+@limiter.limit("30/minute")
 async def login(form_data: UserLogin, request: Request):
     """
     用户登录
@@ -531,12 +536,20 @@ async def login(form_data: UserLogin, request: Request):
 
     logger.info(f"登录请求 - 用户名: {username}, IP: {ip}")
 
-    # 检查账户锁定状态
+    # 检查IP锁定状态
+    if login_tracker.is_ip_locked(ip):
+        logger.warning(f"登录失败 - IP已锁定: {ip}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="您的IP已被暂时锁定，请稍后再试"
+        )
+
+    # 检查账户锁定状态（在密码验证之前检查，确保锁定后立即返回）
     is_locked, remaining = login_tracker.is_locked(username)
     if is_locked:
-        logger.warning(f"登录失败 - 账户已锁定: {username}")
+        logger.warning(f"登录失败 - 账户已锁定: {username}, 剩余时间: {remaining}分钟")
         raise HTTPException(
-            status_code=status.HTTP_4023_LOCKED,
+            status_code=status.HTTP_423_LOCKED,
             detail=f"账户已被锁定，请 {remaining} 分钟后重试"
         )
 
@@ -553,24 +566,35 @@ async def login(form_data: UserLogin, request: Request):
     # 检查用户是否被禁用
     if user_db.is_disabled(username):
         logger.warning(f"登录失败 - 用户已禁用: {username}")
+        # 明确告知用户账户状态，不透露其他信息
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="用户已被禁用"
+            detail="账户已被禁用"
         )
 
     # 验证密码（使用 bcrypt）
     if not PasswordHasher.verify_password(form_data.password, user["hashed_password"]):
         logger.warning(f"登录失败 - 密码错误: {username}")
 
-        # 检查是否需要锁定账户
+        # 检查是否需要锁定账户（在记录失败尝试之前检查）
         can_login, lock_msg = login_tracker.check_and_lock(username, ip)
+
+        # 记录失败尝试（必须在check_and_lock之后调用，否则会重复计算）
         login_tracker.record_attempt(username, ip, False)
 
         if not can_login:
-            raise HTTPException(
-                status_code=status.HTTP_423_LOCKED,
-                detail=lock_msg
-            )
+            # 如果是首次锁定，需要重新获取剩余时间
+            is_locked, remaining = login_tracker.is_locked(username)
+            if is_locked and remaining:
+                raise HTTPException(
+                    status_code=status.HTTP_423_LOCKED,
+                    detail=f"账户已被锁定，请 {remaining} 分钟后重试"
+                )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_423_LOCKED,
+                    detail=lock_msg
+                )
 
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -748,8 +772,8 @@ async def delete_user(username: str, current_user: dict = Depends(get_current_us
             try:
                 await client["ws"].close(code=status.WS_1008_POLICY_VIOLATION, reason="账户已被删除")
                 clients.remove(client)
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"删除用户时断开连接失败: {str(e)}")
 
     return {"message": f"用户 '{username}' 已被删除"}
 
@@ -771,8 +795,8 @@ async def kick_user(username: str, current_user: dict = Depends(get_current_user
                 await client["ws"].close(code=status.WS_1008_POLICY_VIOLATION, reason="已被管理员踢出")
                 clients.remove(client)
                 kicked = True
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"踢出用户时断开连接失败: {str(e)}")
 
     if not kicked:
         raise HTTPException(
@@ -807,8 +831,8 @@ async def send_announcement(
                 "time": int(time.time()),
                 "sender": "管理员"
             })
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"踢出用户时出错: {str(e)}")
 
     logger.info(f"系统公告发送: {announcement.message}")
     return {"message": "系统公告已发送"}
@@ -820,11 +844,20 @@ async def chat(ws: WebSocket):
     """
     WebSocket 聊天端点
     - JWT 认证
+    - Origin 验证
     - 消息加密
     - 消息撤回
     - 在线用户列表
     - 心跳检测
     """
+    # 验证 Origin 头部
+    origin = ws.headers.get("origin")
+    if origin and "*" not in settings.ws_allowed_origins:
+        if origin not in settings.ws_allowed_origins:
+            logger.warning(f"WebSocket连接被拒绝 - Origin验证失败: {origin}")
+            await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="Origin not allowed")
+            return
+
     await ws.accept()
 
     client_info = None
@@ -861,7 +894,14 @@ async def chat(ws: WebSocket):
 
         # 检查用户是否被禁用
         if user["is_disabled"]:
-            await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="用户已被禁用")
+            await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="账户已被禁用")
+            return
+
+        # 检查账户是否被锁定
+        is_locked, remaining = login_tracker.is_locked(username)
+        if is_locked:
+            logger.warning(f"WebSocket连接被拒绝 - 账户已锁定: {username}, 剩余: {remaining}分钟")
+            await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason=f"账户已被锁定，请{remaining}分钟后重试")
             return
 
         # 创建客户端信息
@@ -1063,8 +1103,8 @@ async def broadcast_online_users():
                 "users": online_users,
                 "count": len(online_users)
             })
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"踢出用户时出错: {str(e)}")
 
 
 # ==================== 启动事件 ====================
@@ -1090,6 +1130,6 @@ async def shutdown_event():
     for client in clients[:]:
         try:
             await client["ws"].close()
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"踢出用户时出错: {str(e)}")
     logger.info("应用已关闭")
