@@ -5,4 +5,9 @@ python-jose[cryptography]
 pycryptodome
 python-multipart
 pydantic
-
+pydantic-settings
+loguru
+bcrypt
+slowapi
+python-dotenv
+passlib[bcrypt]

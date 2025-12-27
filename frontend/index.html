@@ -2,244 +2,1039 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <meta name="version" content="v3.2-fixed-2025-01-26-4"/>
+  <meta name="version" content="v3.3-2025-01-26"/>
   <title>Private Chat</title>
   <style>
+    :root {
+      --bg-primary: #f5f5f5;
+      --bg-secondary: #ffffff;
+      --bg-chat-mine: #95ec69;
+      --bg-chat-other: #ffffff;
+      --bg-chat-system: #fff3cd;
+      --bg-header: #ededed;
+      --bg-button: #07C160;
+      --bg-button-hover: #06AD56;
+      --bg-button-danger: #fa5151;
+      --bg-button-danger-hover: #d63e3e;
+      --text-primary: #333333;
+      --text-secondary: #666666;
+      --text-header: #333333;
+      --border-color: #eeeeee;
+      --shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+
+    [data-theme="dark"] {
+      --bg-primary: #1a1a1a;
+      --bg-secondary: #2d2d2d;
+      --bg-chat-mine: #0d4a29;
+      --bg-chat-other: #3d3d3d;
+      --bg-chat-system: #856404;
+      --bg-header: #3a3a3a;
+      --bg-button: #07C160;
+      --bg-button-hover: #06AD56;
+      --bg-button-danger: #fa5151;
+      --bg-button-danger-hover: #d63e3e;
+      --text-primary: #e0e0e0;
+      --text-secondary: #b0b0b0;
+      --text-header: #e0e0e0;
+      --border-color: #444444;
+      --shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background: #f5f5f5;
+      color: #333;
     }
+
+    [data-theme="dark"] body {
+      background: #1a1a1a;
+      color: #e0e0e0;
+    }
+
     #app {
-      max-width: 600px;
+      max-width: 800px;
       margin: auto;
       height: 100vh;
       display: flex;
       flex-direction: column;
-      background: #fff;
+      background: #f5f5f5;
+      position: relative;
     }
+
+    [data-theme="dark"] #app {
+      background: #1a1a1a;
+    }
+
     header {
-      padding: 12px;
+      padding: 10px 15px;
       text-align: center;
-      background: #2f80ed;
-      color: #fff;
-      font-size: 18px;
+      background: #ededed;
+      color: #333;
+      font-size: 16px;
+      font-weight: 500;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      position: relative;
+      z-index: 100;
+      border-bottom: 1px solid #e0e0e0;
     }
+
+    [data-theme="dark"] header {
+      background: #3a3a3a;
+      color: #e0e0e0;
+      border-bottom-color: #444444;
+    }
+
+    #header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 15px;
+      position: relative;
+    }
+
+    .header-left {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .header-right {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .header-title {
+      flex: 1;
+      text-align: center;
+      font-weight: 500;
+      font-size: 16px;
+    }
+
+    .header-btn {
+      background: transparent;
+      border: none;
+      color: #333;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: background-color 0.2s;
+    }
+
+    [data-theme="dark"] .header-btn {
+      color: #e0e0e0;
+    }
+
+    .header-btn:hover {
+      background: rgba(0, 0, 0, 0.05);
+    }
+
+    [data-theme="dark"] .header-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .header-btn-danger {
+      color: #fa5151;
+    }
+
+    .header-btn-danger:hover {
+      background: rgba(250, 81, 81, 0.1);
+    }
+
+    /* 在线用户列表 */
+    #online-users-panel {
+      position: fixed;
+      top: 50px;
+      right: 0;
+      background: var(--bg-secondary);
+      border-left: 2px solid var(--border-color);
+      padding: 15px;
+      z-index: 200;
+      display: none;
+      box-shadow: var(--shadow);
+      max-width: 300px;
+      max-height: 60vh;
+      overflow-y: auto;
+    }
+
+    #online-users-panel.show {
+      display: block;
+    }
+
+    #online-users-panel h3 {
+      margin: 0 0 10px 0;
+      font-size: 16px;
+      color: var(--text-primary);
+    }
+
+    .online-user {
+      display: flex;
+      align-items: center;
+      padding: 8px;
+      margin-bottom: 8px;
+      background: var(--bg-primary);
+      border-radius: 4px;
+    }
+
+    .online-user-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: var(--bg-button);
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      margin-right: 10px;
+    }
+
+    .online-user-info {
+      flex: 1;
+    }
+
+    .online-user-name {
+      font-weight: 500;
+      font-size: 14px;
+    }
+
+    .online-user-status {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .user-badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: bold;
+    }
+
+    .user-badge-admin {
+      background: #ff9800;
+      color: white;
+    }
+
+    /* 认证表单 - 微信风格 */
     #auth-forms {
       flex: 1;
       display: flex;
       flex-direction: column;
       justify-content: center;
       padding: 40px;
+      max-width: 420px;
+      margin: auto;
+      width: 100%;
     }
+
     .auth-form {
       display: none;
+      background: white;
+      padding: 40px 30px;
+      border-radius: 8px;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
     }
+
+    [data-theme="dark"] .auth-form {
+      background: #2e2e2e;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+    }
+
     .auth-form.active {
       display: flex;
       flex-direction: column;
     }
+
     .form-title {
       text-align: center;
-      color: #2f80ed;
+      color: #07C160;
+      margin-bottom: 30px;
+      font-size: 24px;
+      font-weight: 500;
+    }
+
+    .form-group {
       margin-bottom: 20px;
     }
-    .form-group {
-      margin-bottom: 15px;
-    }
+
     label {
       display: block;
-      margin-bottom: 6px;
-      font-weight: 500;
+      margin-bottom: 8px;
+      font-weight: 400;
       font-size: 14px;
+      color: #333;
     }
+
+    [data-theme="dark"] label {
+      color: #e0e0e0;
+    }
+
     input {
       width: 100%;
-      padding: 12px;
+      padding: 14px;
       font-size: 16px;
-      border: 1px solid #ddd;
+      border: 1px solid #e0e0e0;
       border-radius: 4px;
       box-sizing: border-box;
+      background: #fafafa;
+      color: #333;
+      transition: border-color 0.2s;
     }
+
+    [data-theme="dark"] input {
+      background: #3a3a3a;
+      border-color: #4a4a4a;
+      color: #e0e0e0;
+    }
+
     input:focus {
       outline: none;
-      border-color: #2f80ed;
+      border-color: #07C160;
+      background: white;
     }
+
+    [data-theme="dark"] input:focus {
+      background: #4a4a4a;
+    }
+
     button {
       width: 100%;
-      padding: 12px;
+      padding: 14px;
       font-size: 16px;
       border: none;
-      background: #2f80ed;
-      color: #fff;
+      background: #07C160;
+      color: white;
       border-radius: 4px;
       cursor: pointer;
+      font-weight: 500;
+      transition: background-color 0.2s;
     }
+
     button:hover {
-      background: #2565d3;
+      background: #06AD56;
     }
+
+    button:active {
+      background: #05994D;
+      transform: scale(0.98);
+    }
+
     button:disabled {
-      background: #ccc;
+      background: #cccccc;
       cursor: not-allowed;
+      transform: none;
     }
+
     .error {
-      color: #dc3545;
+      color: #fa5151;
       margin-bottom: 15px;
       font-size: 14px;
-      padding: 10px;
-      background: #f8d7da;
+      padding: 12px;
+      background: #fef0f0;
       border-radius: 4px;
       display: none;
+      border-left: 3px solid #fa5151;
     }
+
+    [data-theme="dark"] .error {
+      background: #3d1a1a;
+      color: #ff9999;
+      border-left-color: #ff6b6b;
+    }
+
     .error.show {
       display: block;
     }
+
     .success {
-      color: #155724;
+      color: #07C160;
       margin-bottom: 15px;
       font-size: 14px;
-      padding: 10px;
-      background: #d4edda;
+      padding: 12px;
+      background: #f0f9f4;
       border-radius: 4px;
       display: none;
+      border-left: 3px solid #07C160;
     }
+
+    [data-theme="dark"] .success {
+      background: #1a3d28;
+      color: #90d68b;
+      border-left-color: #06AD56;
+    }
+
     .success.show {
       display: block;
     }
+
     .form-hint {
       font-size: 12px;
-      color: #6c757d;
+      color: var(--text-secondary);
       margin-top: 4px;
     }
+
     .toggle-link {
       text-align: center;
       margin-top: 20px;
       font-size: 14px;
+      color: #666;
     }
+
+    [data-theme="dark"] .toggle-link {
+      color: #b0b0b0;
+    }
+
     .toggle-link a {
-      color: #2f80ed;
+      color: #07C160;
       text-decoration: none;
       cursor: pointer;
+      font-weight: 500;
     }
+
     .toggle-link a:hover {
       text-decoration: underline;
     }
+
+    .checkbox-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+
+    .checkbox-group input[type="checkbox"] {
+      width: auto;
+      padding: 0;
+      margin: 0;
+      cursor: pointer;
+    }
+
+    .checkbox-group label.checkbox-label {
+      display: inline;
+      margin: 0;
+      font-weight: 400;
+      color: #666;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    [data-theme="dark"] .checkbox-group label.checkbox-label {
+      color: #b0b0b0;
+    }
+
+    /* 聊天界面 */
     #chat-app {
       display: none;
       flex-direction: column;
       height: 100%;
     }
-    #chat {
-      flex: 1;
-      padding: 10px;
-      overflow-y: auto;
-    }
-    .msg {
-      margin-bottom: 8px;
-      padding: 8px 12px;
-      border-radius: 8px;
-      font-size: 14px;
-    }
-    .msg.mine {
-      background: #e3f2fd;
-      margin-left: 40px;
-    }
-    .msg.other {
-      background: #f5f5f5;
-      margin-right: 40px;
-    }
-    .msg.system {
-      background: #fff3cd;
-      text-align: center;
-      font-size: 13px;
-      margin-left: 0;
-      margin-right: 0;
-    }
-    .msg-sender {
-      font-weight: 500;
-      color: #2f80ed;
-      font-size: 12px;
-      margin-bottom: 4px;
-    }
-    .msg-time {
-      font-size: 11px;
-      color: #999;
-    }
+
     #status {
       padding: 8px 12px;
-      background: #fff3cd;
+      background: var(--bg-chat-system);
       font-size: 13px;
       text-align: center;
+      color: var(--text-primary);
     }
+
     .connected {
-      background: #d4edda !important;
+      background: #07C160 !important;
+      color: white !important;
     }
+
+    #chat {
+      flex: 1;
+      padding: 15px;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      background: #f5f5f5;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    [data-theme="dark"] #chat {
+      background: #1a1a1a;
+    }
+
+    .msg {
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 14px;
+      max-width: 70%;
+      word-wrap: break-word;
+      line-height: 1.6;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    }
+
+    .msg.mine {
+      background: var(--bg-chat-mine);
+      margin-left: auto;
+      margin-right: 0;
+      align-self: flex-end;
+      color: #333;
+    }
+
+    .msg.other {
+      background: var(--bg-chat-other);
+      margin-right: auto;
+      margin-left: 0;
+      align-self: flex-start;
+      border: 1px solid #eeeeee;
+    }
+
+    [data-theme="dark"] .msg.other {
+      border-color: #444444;
+    }
+
+    .msg.system {
+      background: var(--bg-chat-system);
+      text-align: center;
+      font-size: 13px;
+      margin-left: auto;
+      margin-right: auto;
+      align-self: center;
+      max-width: 90%;
+      padding: 6px 12px;
+      color: #666;
+    }
+
+    .msg-sender {
+      font-weight: 500;
+      color: var(--bg-button);
+      font-size: 12px;
+      margin-bottom: 4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .msg-time {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-left: 8px;
+    }
+
+    .msg-recall {
+      background: var(--bg-chat-system) !important;
+      color: var(--text-secondary);
+      font-style: italic;
+    }
+
+    /* 公告消息特殊样式 */
+    .msg.announcement {
+      background: #fff3cd !important;
+      border: 2px solid #ffc107;
+      text-align: center;
+      font-weight: 500;
+      margin-left: auto;
+      margin-right: auto;
+      align-self: center;
+      max-width: 90%;
+    }
+
+    [data-theme="dark"] .msg.announcement {
+      background: #5c4d00 !important;
+      border-color: #ffca28;
+    }
+
+    .msg.announcement .msg-sender {
+      color: #856404;
+      font-weight: 600;
+      justify-content: center;
+      margin-bottom: 6px;
+    }
+
+    [data-theme="dark"] .msg.announcement .msg-sender {
+      color: #ffca28;
+    }
+
+    .recall-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 10px;
+      cursor: pointer;
+      padding: 2px 6px;
+      width: auto;
+    }
+
+    .recall-btn:hover {
+      color: var(--bg-button);
+    }
+
     footer {
       display: flex;
-      border-top: 1px solid #ddd;
-      padding: 10px;
+      border-top: 1px solid var(--border-color);
+      padding: 12px 15px;
+      background: #f7f7f7;
     }
+
+    [data-theme="dark"] footer {
+      background: #2a2a2a;
+    }
+
     #message-input {
       flex: 1;
-      padding: 12px;
+      padding: 10px 12px;
       font-size: 16px;
-      border: 1px solid #ddd;
-      border-radius: 4px;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
       margin-right: 10px;
+      background: white;
+      color: #333;
     }
+
+    [data-theme="dark"] #message-input {
+      background: #3a3a3a;
+      border-color: #444444;
+      color: #e0e0e0;
+    }
+
+    #message-input:focus {
+      outline: none;
+      border-color: #07C160;
+    }
+
     #send-btn {
       width: auto;
-      padding: 12px 24px;
+      padding: 10px 20px;
+      background: #07C160;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 15px;
+      transition: background-color 0.2s;
     }
-    .encryption-info {
-      font-size: 11px;
-      color: #28a745;
-      margin-top: 4px;
+
+    #send-btn:hover {
+      background: #06AD56;
     }
-    .encryption-warning {
-      font-size: 11px;
-      color: #856404;
-      margin-top: 8px;
-      padding: 8px;
-      background: #fff3cd;
+
+    #send-btn:active {
+      background: #05994D;
+    }
+
+    /* 表情选择器 */
+    #emoji-picker {
+      position: absolute;
+      bottom: 80px;
+      right: 15px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 10px;
+      box-shadow: var(--shadow);
+      z-index: 300;
+      display: none;
+      max-width: 280px;
+      max-height: 300px;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+
+    #emoji-picker.show {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 5px;
+    }
+
+    .emoji-btn {
+      font-size: 20px;
+      padding: 5px;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      width: auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       border-radius: 4px;
     }
-    #header {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      padding: 12px 20px;
-      position: relative;
+
+    .emoji-btn:hover {
+      background: var(--bg-primary);
     }
-    #logout-btn {
-      background: #dc3545;
-      padding: 8px 16px;
-      width: auto;
-      font-size: 14px;
+
+    #emoji-toggle {
+      cursor: pointer;
+      font-size: 20px;
+      padding: 10px;
+      background: transparent;
+      border: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* 管理员面板 */
+    #admin-panel {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: var(--bg-secondary);
+      border: 2px solid var(--border-color);
+      border-radius: 8px;
+      padding: 20px;
+      z-index: 500;
+      display: none;
+      box-shadow: var(--shadow);
+      max-width: 90%;
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+
+    #admin-panel.show {
+      display: block;
+    }
+
+    #admin-panel h2 {
+      margin-top: 0;
+      color: var(--bg-button);
+    }
+
+    .admin-section {
+      margin-bottom: 20px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .admin-section:last-child {
+      border-bottom: none;
+    }
+
+    /* 修改密码模态框 */
+    #change-password-modal {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: white;
+      border-radius: 8px;
+      padding: 30px;
+      z-index: 600;
+      display: none;
+      box-shadow: 0 2px 20px rgba(0, 0, 0, 0.2);
+      max-width: 90%;
+      width: 400px;
+    }
+
+    [data-theme="dark"] #change-password-modal {
+      background: #2e2e2e;
+      box-shadow: 0 2px 20px rgba(0, 0, 0, 0.4);
+    }
+
+    #change-password-modal.show {
+      display: block;
+    }
+
+    #change-password-modal h2 {
+      margin-top: 0;
+      color: #07C160;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+
+    /* 密码输入框包装器 */
+    .password-input-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+      width: 100%;
+    }
+
+    .password-input-wrapper input {
+      flex: 1;
+      padding-right: 50px;
+      border-radius: 4px;
+    }
+
+    .password-input-wrapper input:focus {
+      border-color: #07C160;
+    }
+
+    [data-theme="dark"] .password-input-wrapper input:focus {
+      border-color: #07C160;
+    }
+
+    /* 密码显示/隐藏按钮 */
+    .password-toggle-btn {
       position: absolute;
-      right: 20px;
+      right: 8px;
       top: 50%;
       transform: translateY(-50%);
-      display: none;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      font-size: 18px;
+      padding: 6px 8px;
+      color: #999;
+      transition: color 0.2s;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 34px;
     }
-    #logout-btn:hover {
-      background: #c82333;
+
+    [data-theme="dark"] .password-toggle-btn {
+      color: #b0b0b0;
+    }
+
+    .password-toggle-btn:hover {
+      color: #07C160;
+    }
+
+    .user-list-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px;
+      margin-bottom: 8px;
+      background: var(--bg-primary);
+      border-radius: 4px;
+    }
+
+    .user-actions {
+      display: flex;
+      gap: 5px;
+    }
+
+    .btn-sm {
+      padding: 6px 12px;
+      font-size: 12px;
+      width: auto;
+    }
+
+    .btn-danger {
+      background: var(--bg-button-danger);
+    }
+
+    .btn-danger:hover {
+      background: var(--bg-button-danger-hover);
+    }
+
+    /* 加载动画 */
+    #loading-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.5);
+      display: none;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+
+    #loading-overlay.show {
+      display: flex;
+    }
+
+    .spinner {
+      border: 4px solid #f3f3f3;
+      border-top: 4px solid var(--bg-button);
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    /* 网络状态 */
+    #network-status {
+      position: fixed;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 8px 16px;
+      border-radius: 4px;
+      font-size: 14px;
+      z-index: 100;
+      display: none;
+      background: #666;
+      color: white;
+    }
+
+    #network-status.show {
+      display: block;
+    }
+
+    #network-status.online {
+      background: #1b5e20;
+    }
+
+    #network-status.offline {
+      background: #d32f2f;
+    }
+
+    /* 响应式设计 */
+    @media (max-width: 600px) {
+      #app {
+        max-width: 100%;
+      }
+
+      #auth-forms {
+        padding: 20px;
+      }
+
+      .msg {
+        max-width: 90%;
+      }
+
+      #online-users-panel {
+        top: 0;
+        right: 0;
+        width: 80%;
+        max-width: none;
+        max-height: 100vh;
+        border-left: none;
+        border-left: 2px solid var(--border-color);
+      }
+
+      .header-btn {
+        padding: 6px 10px;
+        font-size: 12px;
+      }
+
+      .header-title {
+        font-size: 16px;
+      }
+
+      footer {
+        padding: 8px;
+        flex-direction: row;
+        align-items: center;
+      }
+
+      #message-input {
+        flex: 1;
+        font-size: 16px; /* 防止 iOS 自动缩放 */
+        margin: 0 8px;
+      }
+
+      #emoji-toggle {
+        font-size: 18px;
+        padding: 8px;
+      }
+
+      #send-btn {
+        padding: 10px 14px;
+        font-size: 14px;
+      }
+
+      #emoji-picker {
+        right: 5px;
+        bottom: 65px;
+        max-width: 250px;
+        max-height: 250px;
+      }
+    }
+
+    /* 加密信息 */
+    .encryption-info {
+      font-size: 11px;
+      color: #07C160;
+      margin-top: 4px;
+    }
+
+    .encryption-warning {
+      font-size: 11px;
+      color: #fa5151;
+      margin-top: 8px;
+      padding: 8px;
+      background: #fef0f0;
+      border-radius: 4px;
+    }
+
+    [data-theme="dark"] .encryption-warning {
+      background: #3d1a1a;
+      color: #ff9999;
+    }
+
+    [data-theme="dark"] .encryption-warning {
+      background: #856404;
+      color: #ffe082;
+    }
+
+    /* 密码强度指示器 */
+    .password-strength {
+      margin-top: 5px;
+      height: 4px;
+      border-radius: 2px;
+      background: #e0e0e0;
+      overflow: hidden;
+    }
+
+    .password-strength-bar {
+      height: 100%;
+      transition: width 0.3s, background-color 0.3s;
+      width: 0;
+    }
+
+    .password-strength-text {
+      font-size: 11px;
+      margin-top: 4px;
+      color: var(--text-secondary);
     }
   </style>
 </head>
 <body>
   <div id="app">
-    <header id="header">Private Chat<button id="logout-btn" onclick="logout()">退出</button></header>
-    
+    <!-- 网络状态 -->
+    <div id="network-status">网络状态</div>
+
+    <!-- 加载遮罩 -->
+    <div id="loading-overlay">
+      <div class="spinner"></div>
+    </div>
+
+    <!-- 头部 -->
+    <header id="header" style="display: none;">
+      <div class="header-left">
+        <button class="header-btn" onclick="toggleTheme()" title="切换主题">🌓</button>
+        <button class="header-btn" onclick="showOnlineUsers()" title="在线用户">👥 <span id="online-count">0</span></button>
+      </div>
+      <div class="header-title">Private Chat</div>
+      <div class="header-right">
+        <button class="header-btn" id="admin-btn" onclick="showAdminPanel()" style="display: none;">⚙️</button>
+        <button class="header-btn header-btn-danger" onclick="showChangePasswordModal()">🔑</button>
+        <button class="header-btn header-btn-danger" onclick="logout()">退出</button>
+      </div>
+    </header>
+
     <!-- 认证表单 -->
     <div id="auth-forms">
-      <div style="text-align: center; color: #999; font-size: 12px; padding: 10px;">
-        Private Chat v3.2 (2025-01-26-3) - 点击刷新页面可清除缓存
+      <div style="text-align: center; color: var(--text-secondary); font-size: 12px; padding: 10px;">
+        Private Chat v3.3 (2025-01-26) - 安全增强版
       </div>
+
       <!-- 登录表单 -->
       <div id="login-form" class="auth-form active">
         <h2 class="form-title">登录</h2>
@@ -251,16 +1046,26 @@
         </div>
         <div class="form-group">
           <label>密码</label>
-          <input id="login-password" type="password" placeholder="输入密码" />
+          <div class="password-input-wrapper">
+            <input id="login-password" type="password" placeholder="输入密码" />
+            <button type="button" class="password-toggle-btn" onclick="togglePasswordVisibility('login-password', this)">👁️</button>
+          </div>
         </div>
         <div class="form-group">
           <label>消息加密密码（可选）</label>
-          <input id="login-encryption-key" type="password" placeholder="留空使用默认密码" />
+          <div class="password-input-wrapper">
+            <input id="login-encryption-key" type="password" placeholder="留空使用默认密码" />
+            <button type="button" class="password-toggle-btn" onclick="togglePasswordVisibility('login-encryption-key', this)">👁️</button>
+          </div>
           <div class="form-hint">用于加密消息，默认: PrivateChat2025Secure!</div>
           <div class="encryption-info">✓ AES-256 加密保护您的消息</div>
           <div class="encryption-warning">
             ⚠️ 重要：如果要看到其他用户的消息，必须使用相同的加密密码！
           </div>
+        </div>
+        <div class="form-group checkbox-group">
+          <input type="checkbox" id="remember-me" />
+          <label for="remember-me" class="checkbox-label">记住我（7天免登录）</label>
         </div>
         <button onclick="login()" id="login-btn">登录</button>
         <div class="toggle-link">
@@ -280,12 +1085,22 @@
         </div>
         <div class="form-group">
           <label>密码</label>
-          <input id="reg-password" type="password" placeholder="输入密码" />
-          <div class="form-hint">6-32个字符</div>
+          <div class="password-input-wrapper">
+            <input id="reg-password" type="password" placeholder="输入密码" oninput="checkPasswordStrength()" />
+            <button type="button" class="password-toggle-btn" onclick="togglePasswordVisibility('reg-password', this)">👁️</button>
+          </div>
+          <div class="password-strength">
+            <div id="password-strength-bar" class="password-strength-bar"></div>
+          </div>
+          <div id="password-strength-text" class="password-strength-text"></div>
+          <div class="form-hint">至少 8 位，必须包含大小写字母、数字和特殊字符</div>
         </div>
         <div class="form-group">
           <label>确认密码</label>
-          <input id="reg-password-confirm" type="password" placeholder="再次输入密码" />
+          <div class="password-input-wrapper">
+            <input id="reg-password-confirm" type="password" placeholder="再次输入密码" />
+            <button type="button" class="password-toggle-btn" onclick="togglePasswordVisibility('reg-password-confirm', this)">👁️</button>
+          </div>
         </div>
         <button onclick="register()" id="reg-btn">注册</button>
         <div class="toggle-link">
@@ -295,13 +1110,80 @@
     </div>
 
     <!-- 聊天界面 -->
-    <div id="chat-app">
+      <div id="chat-app">
       <div id="status">连接中...</div>
       <div id="chat"></div>
       <footer>
         <input id="message-input" type="text" placeholder="输入消息..." />
-        <button onclick="send()" id="send-btn">发送</button>
+        <div style="display: flex; gap: 8px;">
+          <button id="emoji-toggle" onclick="toggleEmojiPicker()">😊</button>
+          <button onclick="send()" id="send-btn">发送</button>
+        </div>
       </footer>
+    </div>
+
+    <!-- 表情选择器 -->
+    <div id="emoji-picker"></div>
+
+    <!-- 在线用户列表 -->
+    <div id="online-users-panel">
+      <h3>在线用户 <span id="panel-online-count">0</span></h3>
+      <div id="online-users-list"></div>
+    </div>
+
+    <!-- 管理员面板 -->
+    <div id="admin-panel">
+      <h2>管理员面板</h2>
+      <button onclick="closeAdminPanel()" style="margin-bottom: 20px; width: auto;">关闭</button>
+
+      <div class="admin-section">
+        <h3>系统公告</h3>
+        <input id="announcement-input" type="text" placeholder="输入公告内容" />
+        <button onclick="sendAnnouncement()" style="margin-top: 10px;">发送公告</button>
+      </div>
+
+      <div class="admin-section">
+        <h3>用户管理</h3>
+        <button onclick="loadUsers()" style="margin-bottom: 10px;">刷新用户列表</button>
+        <div id="admin-user-list"></div>
+      </div>
+    </div>
+
+    <!-- 修改密码模态框 -->
+    <div id="change-password-modal">
+      <h2>修改密码</h2>
+      <button onclick="closeChangePasswordModal()" style="margin-bottom: 20px; width: auto;">关闭</button>
+
+      <div class="form-group">
+        <label>旧密码</label>
+        <div class="password-input-wrapper">
+          <input id="change-old-password" type="password" placeholder="输入旧密码" />
+          <button type="button" class="password-toggle-btn" onclick="togglePasswordVisibility('change-old-password', this)">👁️</button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>新密码</label>
+        <div class="password-input-wrapper">
+          <input id="change-new-password" type="password" placeholder="输入新密码" oninput="checkNewPasswordStrength()" />
+          <button type="button" class="password-toggle-btn" onclick="togglePasswordVisibility('change-new-password', this)">👁️</button>
+        </div>
+        <div class="password-strength">
+          <div id="new-password-strength-bar" class="password-strength-bar"></div>
+        </div>
+        <div id="new-password-strength-text" class="password-strength-text"></div>
+        <div class="form-hint">至少 8 位，必须包含大小写字母、数字和特殊字符</div>
+      </div>
+
+      <div class="form-group">
+        <label>确认新密码</label>
+        <div class="password-input-wrapper">
+          <input id="change-confirm-password" type="password" placeholder="再次输入新密码" />
+          <button type="button" class="password-toggle-btn" onclick="togglePasswordVisibility('change-confirm-password', this)">👁️</button>
+        </div>
+      </div>
+
+      <button onclick="submitChangePassword()" id="change-password-btn">确认修改</button>
     </div>
   </div>
 
@@ -311,6 +1193,178 @@
     let currentUser = null;
     let encryptionKey = null;
     const defaultEncryptionKey = "PrivateChat2025Secure!";
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 5;
+    const reconnectDelay = 3000;
+    let heartbeatInterval = null;
+    let isAdmin = false;
+    let messages = {}; // 存储消息信息
+    let currentTheme = localStorage.getItem('theme') || 'light';
+
+    // 常用表情
+    const emojis = [
+      '😀', '😃', '😄', '😁', '😅', '😂', '🤣', '😊',
+      '😇', '🙂', '😉', '😌', '😍', '🥰', '😘', '😗',
+      '😙', '😚', '😋', '😛', '😜', '🤪', '😝', '🤑',
+      '🤗', '🤭', '🤫', '🤔', '🤐', '🤨', '😐', '😑',
+      '😶', '😏', '😒', '🙄', '😬', '🤥', '😌', '😔',
+      '😪', '🤤', '😴', '😷', '🤒', '🤕', '🤢', '🤮',
+      '🤧', '🥵', '🥶', '🥴', '😵', '🤯', '🤠', '🥳',
+      '😎', '🤓', '🧐', '😕', '😟', '🙁', '😮', '😯'
+    ];
+
+    // 初始化
+    document.addEventListener('DOMContentLoaded', () => {
+      // 设置主题
+      if (currentTheme === 'dark') {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+
+      // 初始化表情选择器
+      initEmojiPicker();
+
+      // 检查网络状态
+      checkNetworkStatus();
+
+      // 检查是否有保存的登录状态
+      const savedUser = localStorage.getItem('current_user');
+      const savedToken = savedUser ? localStorage.getItem(`token_${savedUser}`) : null;
+      const savedEncryptionKey = localStorage.getItem(`encryption_key_${savedUser}`);
+
+      if (savedUser && savedToken) {
+        // 恢复登录状态
+        currentUser = savedUser;
+        encryptionKey = savedEncryptionKey || defaultEncryptionKey;
+
+        // 验证 token 是否有效（通过尝试连接 WebSocket）
+        showLoading();
+        connectWebSocket(savedToken);
+      }
+
+      window.addEventListener('online', () => {
+        showNetworkStatus('online');
+        reconnectWebSocket();
+      });
+
+      window.addEventListener('offline', () => {
+        showNetworkStatus('offline');
+      });
+    });
+
+    // 初始化表情选择器
+    function initEmojiPicker() {
+      const picker = document.getElementById('emoji-picker');
+      emojis.forEach(emoji => {
+        const btn = document.createElement('button');
+        btn.className = 'emoji-btn';
+        btn.textContent = emoji;
+        btn.onclick = () => {
+          const input = document.getElementById('message-input');
+          input.value += emoji;
+          input.focus();
+          picker.classList.remove('show');
+        };
+        picker.appendChild(btn);
+      });
+    }
+
+    // 滚动到底部
+    function scrollToBottom() {
+      const chatDiv = document.getElementById('chat');
+      chatDiv.scrollTop = chatDiv.scrollHeight;
+    }
+
+    // 切换表情选择器
+    function toggleEmojiPicker() {
+      const picker = document.getElementById('emoji-picker');
+      picker.classList.toggle('show');
+
+      if (picker.classList.contains('show')) {
+        // 检查是否超出右边界
+        const rect = picker.getBoundingClientRect();
+        const windowWidth = window.innerWidth;
+        if (rect.right > windowWidth - 10) {
+          picker.style.right = '10px';
+          picker.style.left = 'auto';
+        } else {
+          picker.style.right = '15px';
+          picker.style.left = 'auto';
+        }
+      }
+    }
+
+    // 切换主题
+    function toggleTheme() {
+      currentTheme = currentTheme === 'light' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', currentTheme);
+      localStorage.setItem('theme', currentTheme);
+    }
+
+    // 检查网络状态
+    function checkNetworkStatus() {
+      if (navigator.onLine) {
+        showNetworkStatus('online');
+      } else {
+        showNetworkStatus('offline');
+      }
+    }
+
+    function showNetworkStatus(status) {
+      const statusEl = document.getElementById('network-status');
+      statusEl.textContent = status === 'online' ? '网络已连接' : '网络已断开';
+      statusEl.className = status;
+      statusEl.classList.add('show');
+
+      setTimeout(() => {
+        statusEl.classList.remove('show');
+      }, 3000);
+    }
+
+    // 密码强度检查
+    function checkPasswordStrength() {
+      const password = document.getElementById('reg-password').value;
+      const bar = document.getElementById('password-strength-bar');
+      const text = document.getElementById('password-strength-text');
+
+      let strength = 0;
+      let strengthText = '';
+      let strengthColor = '';
+
+      if (password.length >= 8) strength++;
+      if (password.match(/[a-z]/)) strength++;
+      if (password.match(/[A-Z]/)) strength++;
+      if (password.match(/[0-9]/)) strength++;
+      if (password.match(/[^a-zA-Z0-9]/)) strength++;
+
+      switch(strength) {
+        case 0:
+        case 1:
+          strengthText = '弱';
+          strengthColor = '#dc3545';
+          break;
+        case 2:
+          strengthText = '较弱';
+          strengthColor = '#fd7e14';
+          break;
+        case 3:
+          strengthText = '中等';
+          strengthColor = '#ffc107';
+          break;
+        case 4:
+          strengthText = '强';
+          strengthColor = '#28a745';
+          break;
+        case 5:
+          strengthText = '很强';
+          strengthColor = '#1b5e20';
+          break;
+      }
+
+      bar.style.width = (strength / 5 * 100) + '%';
+      bar.style.backgroundColor = strengthColor;
+      text.textContent = '密码强度: ' + strengthText;
+      text.style.color = strengthColor;
+    }
 
     // AES-256 加密
     function encrypt(message, key) {
@@ -333,7 +1387,6 @@
     // AES-256 解密
     function decrypt(ciphertext, key) {
       try {
-        console.log("[DEBUG] 开始解密，密钥:", key.substring(0, 3) + "***");
         const keyHash = CryptoJS.SHA256(key).toString();
         const combined = CryptoJS.enc.Base64.parse(ciphertext);
         const iv = CryptoJS.lib.WordArray.create(combined.words.slice(0, 4));
@@ -349,39 +1402,19 @@
         );
         const result = decrypted.toString(CryptoJS.enc.Utf8);
 
-        // 严格验证解密结果
-        // CryptoJS有时不抛出异常，但返回乱码
-        // 需要检查结果是否为有效字符串
-        if (!result) {
+        if (!result || result.length === 0 || result.trim().length === 0) {
           return "加密消息：密码不同，无法解密消息";
         }
 
-        // 检查结果长度
-        if (result.length === 0) {
-          return "加密消息：密码不同，无法解密消息";
-        }
-
-        // 检查是否包含无效字符（解密失败时通常包含大量控制字符）
-        // UTF-8有效字符不应该有太多控制字符
         const controlCharCount = (result.match(/[\x00-\x1F\x7F]/g) || []).length;
         if (controlCharCount > result.length * 0.3) {
-          console.log("[DEBUG] 解密结果包含太多控制字符:", controlCharCount, "总长度:", result.length);
           return "加密消息：密码不同，无法解密消息";
         }
 
-        // 检查是否为空字符串或纯空白
-        if (result.trim().length === 0) {
-          console.log("[DEBUG] 解密结果为空白，返回错误");
-          return "加密消息：密码不同，无法解密消息";
-        }
-
-        console.log("[DEBUG] 解密成功:", result.substring(0, 20));
         return result;
       } catch (e) {
         console.error("解密失败:", e);
-        const errorMsg = "加密消息：密码不同，无法解密消息";
-        console.log("[DEBUG] 返回错误提示:", errorMsg);
-        return errorMsg;
+        return "加密消息：密码不同，无法解密消息";
       }
     }
 
@@ -390,8 +1423,6 @@
       document.getElementById("login-form").classList.add("active");
       document.getElementById("register-form").classList.remove("active");
       clearMessages();
-      // 隐藏退出按钮
-      document.getElementById("logout-btn").style.display = "none";
     }
 
     // 显示注册表单
@@ -399,11 +1430,9 @@
       document.getElementById("login-form").classList.remove("active");
       document.getElementById("register-form").classList.add("active");
       clearMessages();
-      // 隐藏退出按钮
-      document.getElementById("logout-btn").style.display = "none";
     }
 
-    // 清除错误和成功消息
+    // 清除消息
     function clearMessages() {
       document.getElementById("login-error").classList.remove("show");
       document.getElementById("login-success").classList.remove("show");
@@ -411,12 +1440,21 @@
       document.getElementById("register-success").classList.remove("show");
     }
 
+    // 显示加载
+    function showLoading() {
+      document.getElementById('loading-overlay').classList.add('show');
+    }
+
+    // 隐藏加载
+    function hideLoading() {
+      document.getElementById('loading-overlay').classList.remove('show');
+    }
+
     // 注册
     async function register() {
       const username = document.getElementById("reg-username").value.trim();
       const password = document.getElementById("reg-password").value;
       const confirmPassword = document.getElementById("reg-password-confirm").value;
-      // 注意：注册时不设置加密密码，只在登录时设置
 
       const errorDiv = document.getElementById("register-error");
       const successDiv = document.getElementById("register-success");
@@ -437,8 +1475,37 @@
         return;
       }
 
-      if (!password || password.length < 6 || password.length > 32) {
-        errorDiv.textContent = "密码长度必须在6-32个字符之间";
+      // 验证密码强度（必须包含大小写字母、数字和特殊字符）
+      if (!password || password.length < 8) {
+        errorDiv.textContent = "密码长度必须至少8个字符";
+        errorDiv.classList.add("show");
+        successDiv.classList.remove("show");
+        return;
+      }
+
+      if (!/[a-z]/.test(password)) {
+        errorDiv.textContent = "密码必须包含至少一个小写字母";
+        errorDiv.classList.add("show");
+        successDiv.classList.remove("show");
+        return;
+      }
+
+      if (!/[A-Z]/.test(password)) {
+        errorDiv.textContent = "密码必须包含至少一个大写字母";
+        errorDiv.classList.add("show");
+        successDiv.classList.remove("show");
+        return;
+      }
+
+      if (!/[0-9]/.test(password)) {
+        errorDiv.textContent = "密码必须包含至少一个数字";
+        errorDiv.classList.add("show");
+        successDiv.classList.remove("show");
+        return;
+      }
+
+      if (!/[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]/.test(password)) {
+        errorDiv.textContent = "密码必须包含至少一个特殊字符 (!@#$%^&*()_+-=[]{}|;:,.<>?)";
         errorDiv.classList.add("show");
         successDiv.classList.remove("show");
         return;
@@ -453,6 +1520,7 @@
 
       errorDiv.classList.remove("show");
       successDiv.classList.remove("show");
+      showLoading();
       regBtn.disabled = true;
       regBtn.textContent = "注册中...";
 
@@ -476,13 +1544,9 @@
         const data = await response.json();
         successDiv.textContent = data.message + "，请登录";
         successDiv.classList.add("show");
-        regBtn.disabled = false;
-        regBtn.textContent = "注册";
 
-        // 3秒后自动切换到登录
         setTimeout(() => {
           showLogin();
-          // 预填用户名
           document.getElementById("login-username").value = username;
           document.getElementById("login-password").value = "";
         }, 2000);
@@ -490,6 +1554,8 @@
       } catch (error) {
         errorDiv.textContent = error.message;
         errorDiv.classList.add("show");
+      } finally {
+        hideLoading();
         regBtn.disabled = false;
         regBtn.textContent = "注册";
       }
@@ -500,31 +1566,46 @@
       const username = document.getElementById("login-username").value.trim();
       const password = document.getElementById("login-password").value;
       encryptionKey = document.getElementById("login-encryption-key").value || defaultEncryptionKey;
+      const rememberMe = document.getElementById("remember-me").checked;
+
+      // 清除之前的 token（如果存在）
+      localStorage.removeItem(`token_${username}`);
 
       const errorDiv = document.getElementById("login-error");
       const loginBtn = document.getElementById("login-btn");
 
       errorDiv.classList.remove("show");
+      showLoading();
       loginBtn.disabled = true;
       loginBtn.textContent = "登录中...";
 
       try {
-        // 请求 token
-        const formData = new FormData();
-        formData.append("username", username);
-        formData.append("password", password);
-
         const response = await fetch("/token", {
           method: "POST",
-          body: formData
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            username: username,
+            password: password,
+            remember_me: rememberMe
+          })
         });
 
         if (!response.ok) {
-          throw new Error("用户名或密码错误");
+          const errorData = await response.json();
+          throw new Error(errorData.detail || "登录失败");
         }
 
         const data = await response.json();
         currentUser = data.username;
+
+        // 保存 access token 到 localStorage（使用用户名作为 key，支持多用户同时登录）
+        localStorage.setItem(`token_${currentUser}`, data.access_token);
+        // 保存当前登录用户名
+        localStorage.setItem('current_user', currentUser);
+        // 保存加密密钥（用于刷新后恢复）
+        localStorage.setItem(`encryption_key_${currentUser}`, encryptionKey);
 
         // 连接 WebSocket
         connectWebSocket(data.access_token);
@@ -534,6 +1615,8 @@
         errorDiv.classList.add("show");
         loginBtn.disabled = false;
         loginBtn.textContent = "登录";
+      } finally {
+        hideLoading();
       }
     }
 
@@ -545,66 +1628,186 @@
       ws = new WebSocket(`${protocol}//${host}${port}/ws`);
 
       ws.onopen = async () => {
+        reconnectAttempts = 0;
+        showNetworkStatus('online');
+
         // 发送认证信息
         await ws.send(JSON.stringify({
           token: token,
           encryption_key: encryptionKey
         }));
 
-        // 切换到聊天界面
-        document.getElementById("auth-forms").style.display = "none";
-        document.getElementById("chat-app").style.display = "flex";
-        document.getElementById("status").classList.add("connected");
-
-        // 显示退出按钮
-        document.getElementById("logout-btn").style.display = "block";
+        // 启动心跳
+        startHeartbeat();
       };
 
       ws.onmessage = (e) => {
         const d = JSON.parse(e.data);
         const chatDiv = document.getElementById("chat");
-        const msgDiv = document.createElement("div");
 
         if (d.type === "connected") {
-          document.getElementById("status").textContent = "✓ 已连接到服务器";
+          document.getElementById("auth-forms").style.display = "none";
+          document.getElementById("chat-app").style.display = "flex";
+          document.getElementById("header").style.display = "flex";
+          document.getElementById("status").classList.add("connected");
+          document.getElementById("status").textContent = d.message;
+
+          if (d.is_admin) {
+            isAdmin = true;
+            document.getElementById("admin-btn").style.display = "block";
+          }
+
+          // 隐藏加载遮罩
+          hideLoading();
           return;
         }
 
         if (d.type === "error") {
+          hideLoading();
+          document.getElementById("status").classList.remove("connected");
           document.getElementById("status").textContent = "✗ " + d.message;
+
+          // 如果是 token 无效错误，清除登录状态
+          if (d.message.includes("Invalid token") || d.message.includes("用户不存在")) {
+            forceLogout();
+          }
           return;
         }
 
+        if (d.type === "heartbeat") {
+          return;
+        }
+
+        if (d.type === "online_users") {
+          updateOnlineUsers(d.users);
+          return;
+        }
+
+        if (d.type === "recall") {
+          // 处理消息撤回
+          const msgEl = document.querySelector(`[data-message-id="${d.message_id}"]`);
+          if (msgEl) {
+            msgEl.classList.add('msg-recall');
+            msgEl.querySelector('.msg-content').textContent = '[消息已撤回]';
+          }
+          return;
+        }
+
+        // 处理消息
+        const msgDiv = document.createElement("div");
         msgDiv.className = "msg";
         const sender = d.sender || "系统";
         const isMine = sender === currentUser;
+        const messageId = d.message_id || '';
+
+        if (messageId) {
+          msgDiv.setAttribute('data-message-id', messageId);
+          messages[messageId] = {
+            id: messageId,
+            sender: sender,
+            time: d.time
+          };
+        }
 
         if (d.type === "system") {
           msgDiv.className += " system";
           const decryptedMsg = decrypt(d.message, encryptionKey);
           msgDiv.innerHTML = `<div class="msg-time">${new Date(d.time*1000).toLocaleTimeString()}</div>${decryptedMsg}`;
-        } else if (d.type === "message") {
-          msgDiv.className += isMine ? " mine" : " other";
+        } else if (d.type === "message" || d.type === "announcement") {
+          // 公告消息特殊处理
+          if (d.type === "announcement") {
+            msgDiv.className += " announcement";
+          } else {
+            msgDiv.className += isMine ? " mine" : " other";
+          }
+
           const decryptedMsg = decrypt(d.message, encryptionKey);
+
+          let recallBtn = '';
+          if (isMine && d.type === "message") {
+            recallBtn = `<button class="recall-btn" onclick="recallMessage('${messageId}')">撤回</button>`;
+          }
+
           msgDiv.innerHTML = `
-            <div class="msg-sender">${sender}</div>
-            ${decryptedMsg}
-            <div class="msg-time">${new Date(d.time*1000).toLocaleTimeString()}</div>
+            <div class="msg-sender">
+              <span>${sender}</span>
+              ${recallBtn}
+              <span class="msg-time">${new Date(d.time*1000).toLocaleTimeString()}</span>
+            </div>
+            <div class="msg-content">${decryptedMsg}</div>
           `;
         }
 
         chatDiv.appendChild(msgDiv);
-        chatDiv.scrollTop = chatDiv.scrollHeight;
+        // 自动滚动到底部
+        scrollToBottom();
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
+        stopHeartbeat();
+        hideLoading();
         document.getElementById("status").classList.remove("connected");
-        document.getElementById("status").textContent = "✗ 连接已断开";
+
+        const reason = event.reason || "连接已断开";
+        document.getElementById("status").textContent = "✗ " + reason;
+
+        // 检查是否是被动断开（被踢出或禁用）
+        if (reason.includes("踢出") || reason.includes("禁用") || event.code === 1008) {
+          alert(reason);
+          forceLogout(); // 强制退出
+          return;
+        }
+
+        // 如果 token 无效，清除登录状态
+        if (reason.includes("Invalid token") || event.code === 1008) {
+          forceLogout();
+          return;
+        }
+
+        // 尝试重连
+        if (reconnectAttempts < maxReconnectAttempts) {
+          reconnectAttempts++;
+          setTimeout(() => {
+            console.log(`尝试重连 (${reconnectAttempts}/${maxReconnectAttempts})...`);
+            reconnectWebSocket();
+          }, reconnectDelay);
+        }
       };
 
-      ws.onerror = () => {
+      ws.onerror = (error) => {
+        hideLoading();
         document.getElementById("status").textContent = "✗ 连接错误";
+        console.error("WebSocket 错误:", error);
       };
+    }
+
+    // 重连 WebSocket
+    function reconnectWebSocket() {
+      if (currentUser && (!ws || ws.readyState === WebSocket.CLOSED)) {
+        // 需要重新获取 token
+        // 这里简化处理，实际应该存储 token
+        console.log("重连中...");
+      }
+    }
+
+    // 启动心跳
+    function startHeartbeat() {
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+      }
+      heartbeatInterval = setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "heartbeat" }));
+        }
+      }, 30000);
+    }
+
+    // 停止心跳
+    function stopHeartbeat() {
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+      }
     }
 
     // 发送消息
@@ -614,8 +1817,457 @@
 
       if (message && ws && ws.readyState === WebSocket.OPEN) {
         const encryptedMsg = encrypt(message, encryptionKey);
-        ws.send(JSON.stringify({ message: encryptedMsg }));
+        ws.send(JSON.stringify({ message: encryptedMsg, type: "message" }));
         input.value = "";
+      }
+    }
+
+    // 撤回消息
+    function recallMessage(messageId) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "recall",
+          message_id: messageId
+        }));
+      }
+    }
+
+    // 更新在线用户列表
+    function updateOnlineUsers(users) {
+      const countEl = document.getElementById('online-count');
+      const panelCountEl = document.getElementById('panel-online-count');
+      const listEl = document.getElementById('online-users-list');
+
+      countEl.textContent = users.length;
+      panelCountEl.textContent = users.length;
+
+      listEl.innerHTML = '';
+      users.forEach(user => {
+        const div = document.createElement('div');
+        div.className = 'online-user';
+        div.innerHTML = `
+          <div class="online-user-avatar">
+            ${user.username.charAt(0).toUpperCase()}
+          </div>
+          <div class="online-user-info">
+            <div class="online-user-name">${user.username}</div>
+            <div class="online-user-status">
+              在线 ${Math.floor((Date.now() / 1000 - user.connected_at) / 60)} 分钟
+              ${user.is_admin ? '<span class="user-badge user-badge-admin">管理员</span>' : ''}
+            </div>
+          </div>
+        `;
+        listEl.appendChild(div);
+      });
+    }
+
+    // 显示在线用户面板
+    function showOnlineUsers() {
+      const panel = document.getElementById('online-users-panel');
+      panel.classList.toggle('show');
+    }
+
+    // 显示管理员面板
+    function showAdminPanel() {
+      if (isAdmin) {
+        document.getElementById('admin-panel').classList.add('show');
+        loadUsers();
+      }
+    }
+
+    // 关闭管理员面板
+    function closeAdminPanel() {
+      document.getElementById('admin-panel').classList.remove('show');
+    }
+
+    // 加载用户列表
+    async function loadUsers() {
+      try {
+        const token = localStorage.getItem(`token_${currentUser}`);
+        const response = await fetch('/api/admin/users', {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const listEl = document.getElementById('admin-user-list');
+          listEl.innerHTML = '';
+
+          data.users.forEach(user => {
+            const div = document.createElement('div');
+            div.className = 'user-list-item';
+            div.innerHTML = `
+              <div>
+                <strong>${user.username}</strong>
+                ${user.is_admin ? '<span class="user-badge user-badge-admin">管理员</span>' : ''}
+                ${user.is_disabled ? '<span class="user-badge" style="background: #666; color: white;">已禁用</span>' : ''}
+                <div style="font-size: 12px; color: #999;">注册于: ${new Date(user.created_at).toLocaleDateString()}</div>
+              </div>
+              <div class="user-actions">
+                <button class="btn-sm" onclick="kickUser('${user.username}')">踢出</button>
+                ${user.is_disabled ?
+                  `<button class="btn-sm" onclick="enableUser('${user.username}')">启用</button>` :
+                  `<button class="btn-sm btn-danger" onclick="disableUser('${user.username}')">禁用</button>`
+                }
+              </div>
+            `;
+            listEl.appendChild(div);
+          });
+        }
+      } catch (error) {
+        console.error('加载用户列表失败:', error);
+      }
+    }
+
+    // 发送公告
+    async function sendAnnouncement() {
+      const message = document.getElementById('announcement-input').value.trim();
+      if (!message) return;
+
+      try {
+        const token = localStorage.getItem(`token_${currentUser}`);
+        const response = await fetch('/api/admin/announcement', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ message: message })
+        });
+
+        if (response.ok) {
+          document.getElementById('announcement-input').value = '';
+          alert('公告已发送');
+        } else {
+          const errorData = await response.json();
+          alert('发送失败: ' + errorData.detail);
+        }
+      } catch (error) {
+        alert('发送失败: ' + error.message);
+      }
+    }
+
+    // 禁用用户
+    async function disableUser(username) {
+      // 不能禁用自己
+      if (username === currentUser) {
+        alert('不能禁用自己');
+        return;
+      }
+
+      if (!confirm(`确定要禁用用户 "${username}" 吗？`)) return;
+
+      try {
+        const token = localStorage.getItem(`token_${currentUser}`);
+        const response = await fetch(`/api/admin/disable-user/${username}`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+
+        if (response.ok) {
+          alert('用户已禁用');
+          loadUsers();
+        } else {
+          const errorData = await response.json();
+          alert('操作失败: ' + (errorData.detail || '未知错误'));
+        }
+      } catch (error) {
+        alert('操作失败: ' + error.message);
+      }
+    }
+
+    // 启用用户
+    async function enableUser(username) {
+      try {
+        const token = localStorage.getItem(`token_${currentUser}`);
+        const response = await fetch(`/api/admin/enable-user/${username}`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+
+        if (response.ok) {
+          alert('用户已启用');
+          loadUsers();
+        } else {
+          const errorData = await response.json();
+          alert('操作失败: ' + (errorData.detail || '未知错误'));
+        }
+      } catch (error) {
+        alert('操作失败: ' + error.message);
+      }
+    }
+
+    // 踢出用户
+    async function kickUser(username) {
+      // 不能踢出自己
+      if (username === currentUser) {
+        alert('不能踢出自己');
+        return;
+      }
+
+      if (!confirm(`确定要踢出用户 "${username}" 吗？`)) return;
+
+      try {
+        const token = localStorage.getItem(`token_${currentUser}`);
+        const response = await fetch(`/api/admin/kick/${username}`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+
+        if (response.ok) {
+          alert('用户已踢出');
+        } else {
+          const errorData = await response.json();
+          alert('操作失败: ' + (errorData.detail || '未知错误'));
+        }
+      } catch (error) {
+        alert('操作失败: ' + error.message);
+      }
+    }
+
+    // 显示修改密码模态框
+    function showChangePasswordModal() {
+      const modal = document.getElementById('change-password-modal');
+      modal.classList.add('show');
+
+      // 清空输入框
+      document.getElementById('change-old-password').value = '';
+      document.getElementById('change-new-password').value = '';
+      document.getElementById('change-confirm-password').value = '';
+      document.getElementById('new-password-strength-bar').style.width = '0';
+      document.getElementById('new-password-strength-text').textContent = '';
+    }
+
+    // 关闭修改密码模态框
+    function closeChangePasswordModal() {
+      const modal = document.getElementById('change-password-modal');
+      modal.classList.remove('show');
+    }
+
+    // 切换密码显示/隐藏
+    function togglePasswordVisibility(inputId, button) {
+      const input = document.getElementById(inputId);
+      if (input.type === 'password') {
+        input.type = 'text';
+        button.textContent = '🙈️';
+      } else {
+        input.type = 'password';
+        button.textContent = '👁️';
+      }
+    }
+
+    // 检查新密码强度
+    function checkNewPasswordStrength() {
+      const password = document.getElementById('change-new-password').value;
+      const bar = document.getElementById('new-password-strength-bar');
+      const text = document.getElementById('new-password-strength-text');
+
+      let strength = 0;
+      let strengthText = '';
+      let strengthColor = '';
+
+      if (password.length >= 8) strength++;
+      if (password.match(/[a-z]/)) strength++;
+      if (password.match(/[A-Z]/)) strength++;
+      if (password.match(/[0-9]/)) strength++;
+      if (password.match(/[^a-zA-Z0-9]/)) strength++;
+
+      switch(strength) {
+        case 0:
+        case 1:
+          strengthText = '弱';
+          strengthColor = '#dc3545';
+          break;
+        case 2:
+          strengthText = '一般';
+          strengthColor = '#ffc107';
+          break;
+        case 3:
+        case 4:
+          strengthText = '强';
+          strengthColor = '#28a745';
+          break;
+        case 5:
+          strengthText = '很强';
+          strengthColor = '#07C160';
+          break;
+      }
+
+      bar.style.width = password ? (strength * 20) + '%' : '0';
+      bar.style.backgroundColor = strengthColor;
+      text.textContent = password ? strengthText : '';
+    }
+
+    // 提交修改密码
+    async function submitChangePassword() {
+      const oldPassword = document.getElementById('change-old-password').value;
+      const newPassword = document.getElementById('change-new-password').value;
+      const confirmPassword = document.getElementById('change-confirm-password').value;
+      const btn = document.getElementById('change-password-btn');
+
+      // 验证输入
+      if (!oldPassword) {
+        alert('请输入旧密码');
+        return;
+      }
+
+      if (!newPassword || newPassword.length < 8) {
+        alert('新密码长度至少8位');
+        return;
+      }
+
+      // 验证密码强度
+      if (!/[a-z]/.test(newPassword)) {
+        alert('密码必须包含至少一个小写字母');
+        return;
+      }
+
+      if (!/[A-Z]/.test(newPassword)) {
+        alert('密码必须包含至少一个大写字母');
+        return;
+      }
+
+      if (!/[0-9]/.test(newPassword)) {
+        alert('密码必须包含至少一个数字');
+        return;
+      }
+
+      if (!/[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]/.test(newPassword)) {
+        alert('密码必须包含至少一个特殊字符 (!@#$%^&*()_+-=[]{}|;:,.<>?)');
+        return;
+      }
+
+      if (newPassword !== confirmPassword) {
+        alert('两次输入的新密码不一致');
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = '修改中...';
+
+      try {
+        const token = localStorage.getItem(`token_${currentUser}`);
+        const response = await fetch('/api/user/change-password', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            old_password: oldPassword,
+            new_password: newPassword
+          })
+        });
+
+        if (response.ok) {
+          alert('密码修改成功，请重新登录');
+          closeChangePasswordModal();
+          forceLogout(); // 强制退出，不需要确认
+        } else {
+          const errorData = await response.json();
+          alert('修改失败: ' + errorData.detail);
+        }
+      } catch (error) {
+        alert('修改失败: ' + error.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '确认修改';
+      }
+    }
+
+    // 修改密码（保留旧函数以兼容）
+    async function changePassword(oldPassword, newPassword) {
+      try {
+        const token = localStorage.getItem(`token_${currentUser}`);
+        const response = await fetch('/api/user/change-password', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            old_password: oldPassword,
+            new_password: newPassword
+          })
+        });
+
+        if (response.ok) {
+          alert('密码修改成功，请重新登录');
+          logout();
+        } else {
+          const errorData = await response.json();
+          alert('修改失败: ' + errorData.detail);
+        }
+      } catch (error) {
+        alert('修改失败: ' + error.message);
+      }
+    }
+
+    // 强制退出登录（不显示确认框）
+    function forceLogout() {
+      stopHeartbeat();
+      if (ws) {
+        ws.close();
+      }
+      // 清除当前用户的 token
+      if (currentUser) {
+        localStorage.removeItem(`token_${currentUser}`);
+      }
+      localStorage.removeItem('current_user');
+      localStorage.removeItem(`encryption_key_${currentUser}`);
+      currentUser = null;
+      encryptionKey = null;
+      isAdmin = false;
+
+      document.getElementById("chat-app").style.display = "none";
+      document.getElementById("header").style.display = "none";
+      document.getElementById("auth-forms").style.display = "flex";
+      document.getElementById("login-form").classList.add("active");
+      document.getElementById("register-form").classList.remove("active");
+      document.getElementById("chat").innerHTML = "";
+      document.getElementById("message-input").value = "";
+      document.getElementById("online-users-panel").classList.remove("show");
+      document.getElementById("admin-panel").classList.remove("show");
+      document.getElementById("emoji-picker").classList.remove("show");
+      document.getElementById("admin-btn").style.display = "none";
+    }
+
+    // 退出登录
+    function logout() {
+      if (confirm("确定要退出吗？")) {
+        stopHeartbeat();
+        if (ws) {
+          ws.close();
+        }
+        // 清除当前用户的 token
+        if (currentUser) {
+          localStorage.removeItem(`token_${currentUser}`);
+        }
+        localStorage.removeItem('current_user');
+        localStorage.removeItem(`encryption_key_${currentUser}`);
+        currentUser = null;
+        encryptionKey = null;
+        isAdmin = false;
+
+        document.getElementById("chat-app").style.display = "none";
+        document.getElementById("header").style.display = "none";
+        document.getElementById("auth-forms").style.display = "flex";
+        document.getElementById("login-form").classList.add("active");
+        document.getElementById("register-form").classList.remove("active");
+        document.getElementById("chat").innerHTML = "";
+        document.getElementById("message-input").value = "";
+        document.getElementById("online-users-panel").classList.remove("show");
+        document.getElementById("admin-panel").classList.remove("show");
+        document.getElementById("emoji-toggle").classList.remove("show");
+        document.getElementById("admin-btn").style.display = "none";
       }
     }
 
@@ -626,41 +2278,38 @@
       }
     });
 
-    // 回车登录/注册
+    // 回车登录
     document.getElementById("login-password").addEventListener("keypress", (e) => {
       if (e.key === "Enter") {
         login();
       }
     });
 
+    // 回车注册
     document.getElementById("reg-password-confirm").addEventListener("keypress", (e) => {
       if (e.key === "Enter") {
         register();
       }
     });
 
-    // 退出登录
-    function logout() {
-      if (confirm("确定要退出吗？")) {
-        // 关闭WebSocket连接
-        if (ws) {
-          ws.close();
-        }
-        // 清理状态
-        currentUser = null;
-        encryptionKey = null;
-        // 显示登录表单
-        document.getElementById("chat-app").style.display = "none";
-        document.getElementById("auth-forms").style.display = "flex";
-        document.getElementById("login-form").classList.add("active");
-        document.getElementById("register-form").classList.remove("active");
-        // 清空聊天记录
-        document.getElementById("chat").innerHTML = "";
-        document.getElementById("message-input").value = "";
-        // 隐藏退出按钮
-        document.getElementById("logout-btn").style.display = "none";
+    // 点击其他地方关闭面板
+    document.addEventListener('click', (e) => {
+      const emojiPicker = document.getElementById('emoji-picker');
+      const emojiToggle = document.getElementById('emoji-toggle');
+      const onlinePanel = document.getElementById('online-users-panel');
+      const onlineBtn = document.querySelector('[onclick="showOnlineUsers()"]');
+
+      if (!emojiPicker.contains(e.target) && !emojiToggle.contains(e.target)) {
+        emojiPicker.classList.remove('show');
+        // 重置位置
+        emojiPicker.style.right = '15px';
+        emojiPicker.style.left = 'auto';
       }
-    }
+
+      if (!onlinePanel.contains(e.target) && !onlineBtn.contains(e.target)) {
+        onlinePanel.classList.remove('show');
+      }
+    });
   </script>
 </body>
 </html>
