@@ -3,6 +3,7 @@
 # ========================================
 # Minimal Chat 自动部署脚本
 # 适用于 Ubuntu 20.04/22.04
+# GitHub: https://github.com/fangbb-coder/privatechat
 # ========================================
 
 set -e  # 遇到错误立即退出
@@ -11,7 +12,14 @@ set -e  # 遇到错误立即退出
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
+
+# 配置变量
+PROJECT_DIR="/root/minimal-chat"
+BACKEND_DIR="$PROJECT_DIR/backend"
+VENV_DIR="$BACKEND_DIR/venv"
+GITHUB_REPO="https://github.com/fangbb-coder/privatechat.git"
 
 # 日志函数
 log_info() {
@@ -26,6 +34,10 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+log_step() {
+    echo -e "${BLUE}[STEP]${NC} $1"
+}
+
 # 检查是否为root用户
 check_root() {
     if [ "$EUID" -ne 0 ]; then
@@ -36,14 +48,14 @@ check_root() {
 
 # 更新系统
 update_system() {
-    log_info "正在更新系统..."
+    log_step "正在更新系统..."
     apt update && apt upgrade -y
     log_info "系统更新完成"
 }
 
 # 安装必要软件
 install_dependencies() {
-    log_info "正在安装必要软件..."
+    log_step "正在安装必要软件..."
 
     # 安装 Python
     apt install -y python3 python3-pip python3-venv
@@ -54,16 +66,44 @@ install_dependencies() {
     # 安装 Certbot (用于HTTPS)
     apt install -y certbot python3-certbot-nginx
 
+    # 安装 Git
+    apt install -y git
+
     log_info "软件安装完成"
+}
+
+# 获取项目代码
+get_project() {
+    log_step "正在获取项目代码..."
+
+    # 检查项目目录是否已存在
+    if [ -d "$PROJECT_DIR" ]; then
+        log_warn "项目目录已存在: $PROJECT_DIR"
+        read -p "是否更新现有项目? (y/n): " UPDATE_PROJECT
+        if [[ $UPDATE_PROJECT =~ ^[Yy]$ ]]; then
+            log_info "正在更新项目..."
+            cd "$PROJECT_DIR"
+            git pull origin main
+            log_info "项目更新完成"
+        else
+            log_warn "跳过项目更新"
+        fi
+    else
+        read -p "是否从 GitHub 克隆项目? (y/n): " CLONE_FROM_GITHUB
+        if [[ $CLONE_FROM_GITHUB =~ ^[Yy]$ ]]; then
+            log_info "正在从 GitHub 克隆项目..."
+            git clone "$GITHUB_REPO" "$PROJECT_DIR"
+            log_info "项目克隆完成"
+        else
+            log_error "请手动上传项目文件到 $PROJECT_DIR"
+            exit 1
+        fi
+    fi
 }
 
 # 配置项目
 setup_project() {
-    log_info "正在配置项目..."
-
-    PROJECT_DIR="/root/minimal-chat"
-    BACKEND_DIR="$PROJECT_DIR/backend"
-    VENV_DIR="$BACKEND_DIR/venv"
+    log_step "正在配置项目..."
 
     # 创建虚拟环境
     log_info "创建 Python 虚拟环境..."
@@ -81,14 +121,15 @@ setup_project() {
 
 # 生成随机密钥
 generate_secret_key() {
-    log_info "生成随机密钥..."
+    log_step "生成随机密钥..."
     python3 -c "import secrets; print('SECRET_KEY = \"' + secrets.token_hex(32) + '\"')" > "$BACKEND_DIR/secret_key.txt"
     log_warn "请将 secret_key.txt 中的密钥添加到 main.py 中替换原有 SECRET_KEY"
+    log_info "密钥已保存到: $BACKEND_DIR/secret_key.txt"
 }
 
 # 配置 Nginx
 configure_nginx() {
-    log_info "正在配置 Nginx..."
+    log_step "正在配置 Nginx..."
 
     # 询问域名
     read -p "请输入域名（如果没有，直接回车使用服务器IP）: " DOMAIN_NAME
@@ -156,7 +197,7 @@ configure_https() {
             return
         fi
 
-        log_info "正在配置 HTTPS..."
+        log_step "正在配置 HTTPS..."
         certbot --nginx -d "$DOMAIN_NAME" --non-interactive --agree-tos --email admin@$DOMAIN_NAME
 
         # 配置自动续期
@@ -172,7 +213,7 @@ EOF
 
 # 配置 Systemd 服务
 configure_systemd() {
-    log_info "正在配置 Systemd 服务..."
+    log_step "正在配置 Systemd 服务..."
 
     cat > /etc/systemd/system/minimal-chat.service <<EOF
 [Unit]
@@ -194,7 +235,7 @@ EOF
 
     # 重载并启动服务
     systemctl daemon-reload
-    systemctl start minimal-chat
+    systemctl restart minimal-chat
     systemctl enable minimal-chat
 
     # 检查服务状态
@@ -209,7 +250,7 @@ EOF
 
 # 配置防火墙
 configure_firewall() {
-    log_info "正在配置防火墙..."
+    log_step "正在配置防火墙..."
 
     # 检查 UFW 是否安装
     if ! command -v ufw &> /dev/null; then
@@ -234,6 +275,10 @@ show_info() {
     echo "  🎉 部署完成！"
     echo "========================================"
     echo ""
+    echo "项目信息:"
+    echo "  GitHub: https://github.com/fangbb-coder/privatechat"
+    echo "  本地路径: $PROJECT_DIR"
+    echo ""
     echo "访问地址:"
     echo "  HTTP:  http://$DOMAIN_NAME"
     echo ""
@@ -250,11 +295,13 @@ show_info() {
     echo "  重启服务:        systemctl restart minimal-chat"
     echo "  查看日志:        journalctl -u minimal-chat -f"
     echo "  查看 Nginx 日志:  tail -f /var/log/nginx/error.log"
+    echo "  更新项目:        cd $PROJECT_DIR && git pull"
     echo ""
     echo "⚠️  重要提醒:"
     echo "  1. 修改 backend/secret_key.txt 中的密钥到 main.py"
     echo "  2. 修改默认用户密码（admin/admin234）"
     echo "  3. 定期备份数据"
+    echo "  4. 生产环境必须配置 HTTPS"
     echo "========================================"
     echo ""
 }
@@ -263,12 +310,14 @@ show_info() {
 main() {
     echo "========================================"
     echo "  Minimal Chat 自动部署脚本"
+    echo "  GitHub: https://github.com/fangbb-coder/privatechat"
     echo "========================================"
     echo ""
 
     check_root
     update_system
     install_dependencies
+    get_project
     setup_project
     generate_secret_key
     configure_nginx

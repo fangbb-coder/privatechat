@@ -1,5 +1,6 @@
 ========================================
-  Minimal Chat 阿里云服务器部署指南
+  Private Chat v3.2 - 阿里云服务器部署指南
+  GitHub: https://github.com/fangbb-coder/privatechat
 ========================================
 
 一、服务器要求
@@ -25,49 +26,33 @@
   端口 22   - SSH（建议限制IP）
 
 
-二、快速部署
+二、快速部署（推荐）
 ========================================
 
-1. 将项目文件上传到服务器
-
-   方法一: 使用 scp（本地执行）
-   -----
-   scp -r e:/minimal-chat root@服务器IP:/root/
-
-   方法二: 使用 Git
-   -----
-   # 如果代码在 Git 仓库
-   git clone <你的仓库地址> /root/minimal-chat
-
-
-2. 上传部署脚本到服务器
-
-   方法一: 使用 scp
-   -----
-   scp e:/minimal-chat/deploy.sh root@服务器IP:/root/
-
-   方法二: 在服务器上创建
-   -----
-   # 手动创建 deploy.sh 文件，复制脚本内容
-
-
-3. 执行部署脚本
+1. 连接到服务器
 
    # SSH 连接到服务器
    ssh root@服务器IP
 
-   # 进入项目目录
+2. 下载并执行部署脚本
+
+   # 方法一：从 GitHub 克隆项目
+   git clone https://github.com/fangbb-coder/privatechat.git /root/minimal-chat
    cd /root/minimal-chat
-
-   # 给脚本添加执行权限
    chmod +x deploy.sh
-
-   # 执行部署
    sudo ./deploy.sh
+
+   # 方法二：直接下载脚本
+   wget https://raw.githubusercontent.com/fangbb-coder/privatechat/main/deploy.sh
+   chmod +x deploy.sh
+   sudo ./deploy.sh
+
+3. 按照脚本提示完成配置
 
    脚本将自动完成:
    - 系统更新
-   - 安装 Python, Nginx, Certbot
+   - 安装 Python, Nginx, Certbot, Git
+   - 从 GitHub 克隆项目代码
    - 配置虚拟环境
    - 安装依赖
    - 配置 Nginx 反向代理
@@ -75,8 +60,21 @@
    - 配置 Systemd 服务
    - 配置防火墙
 
+4. 部署后配置
 
-三、手动部署步骤（可选）
+   # 修改密钥
+   cd /root/minimal-chat/backend
+   cat secret_key.txt
+   # 将生成的密钥替换 main.py 中的 SECRET_KEY
+
+   # 修改默认密码
+   # 编辑 backend/main.py，修改默认用户密码（admin/admin234）
+
+   # 重启服务
+   systemctl restart minimal-chat
+
+
+三、手动部署步骤
 ========================================
 
 如果自动部署失败，可按以下步骤手动部署：
@@ -84,9 +82,13 @@
 1. 安装必要软件
    -----
    apt update && apt upgrade -y
-   apt install -y python3 python3-pip python3-venv nginx certbot python3-certbot-nginx
+   apt install -y python3 python3-pip python3-venv nginx certbot python3-certbot-nginx git
 
-2. 配置项目
+2. 克隆项目
+   -----
+   git clone https://github.com/fangbb-coder/privatechat.git /root/minimal-chat
+
+3. 配置项目
    -----
    cd /root/minimal-chat/backend
    python3 -m venv venv
@@ -94,7 +96,7 @@
    pip install -r requirements.txt
    pip install gunicorn
 
-3. 配置 Nginx
+4. 配置 Nginx
    -----
    # 编辑配置文件
    nano /etc/nginx/sites-available/minimal-chat
@@ -109,11 +111,11 @@
    nginx -t
    systemctl restart nginx
 
-4. 配置 HTTPS（可选）
+5. 配置 HTTPS（可选）
    -----
    certbot --nginx -d 你的域名
 
-5. 配置 Systemd 服务
+6. 配置 Systemd 服务
    -----
    # 编辑服务文件
    nano /etc/systemd/system/minimal-chat.service
@@ -125,7 +127,7 @@
    systemctl start minimal-chat
    systemctl enable minimal-chat
 
-6. 配置防火墙
+7. 配置防火墙
    -----
    apt install -y ufw
    ufw allow ssh
@@ -134,7 +136,29 @@
    ufw enable
 
 
-四、部署后配置
+四、更新项目
+========================================
+
+当 GitHub 仓库有更新时，可以快速更新服务器上的项目：
+
+1. 拉取最新代码
+   -----
+   cd /root/minimal-chat
+   git pull origin main
+
+2. 重启服务
+   -----
+   systemctl restart minimal-chat
+
+3. 如果有依赖更新
+   -----
+   cd /root/minimal-chat/backend
+   source venv/bin/activate
+   pip install -r requirements.txt
+   systemctl restart minimal-chat
+
+
+五、部署后配置
 ========================================
 
 1. 修改密钥
@@ -153,7 +177,7 @@
    systemctl restart minimal-chat
 
 
-五、常用管理命令
+六、常用管理命令
 ========================================
 
 服务管理:
@@ -173,8 +197,13 @@ Nginx管理:
   重启服务:    systemctl restart nginx
   重新加载:    systemctl reload nginx
 
+Git管理:
+  查看状态:    git status
+  拉取更新:    git pull origin main
+  查看日志:    git log --oneline
 
-六、费用参考（阿里云）
+
+七、费用参考（阿里云）
 ========================================
 
 1核1GB   约 ¥30/月   个人测试
@@ -182,7 +211,7 @@ Nginx管理:
 2核4GB   约 ¥200/月  生产环境
 
 
-七、故障排查
+八、故障排查
 ========================================
 
 1. 服务无法启动
@@ -205,8 +234,13 @@ Nginx管理:
    - 检查端口监听: netstat -tlnp | grep :80
    - 检查安全组规则
 
+5. Git 拉取失败
+   - 检查网络连接: ping github.com
+   - 检查 Git 配置: git remote -v
+   - 手动拉取: git fetch origin
 
-八、安全建议
+
+九、安全建议
 ========================================
 
 1. 修改 SSH 默认端口
@@ -216,9 +250,11 @@ Nginx管理:
 5. 使用强密码
 6. 定期备份数据
 7. 配置 fail2ban 防止暴力破解
+8. 生产环境必须配置 HTTPS
+9. 定期更新项目代码
 
 
-九、访问地址
+十、访问地址
 ========================================
 
 部署成功后，可通过以下地址访问:
@@ -230,16 +266,20 @@ Nginx管理:
 
   http://服务器IP
 
+项目主页: https://github.com/fangbb-coder/privatechat
 
-十、技术支持
+
+十一、技术支持
 ========================================
 
 如有问题，请查看:
+- GitHub 仓库: https://github.com/fangbb-coder/privatechat
 - 应用日志: journalctl -u minimal-chat -f
 - Nginx日志: tail -f /var/log/nginx/error.log
 - README.md 文档
 
-十一、隐私特性说明
+
+十二、隐私特性说明
 ========================================
 
 本聊天系统采用完全隐私保护的设计：
@@ -268,5 +308,68 @@ Nginx管理:
    - 系统重启或服务停止后，所有聊天内容丢失
    - 适合需要"阅后即焚"的沟通场景
    - 如需历史记录，需客户端自行保存
+
+
+十三、功能特性
+========================================
+
+1. 用户注册与登录
+   - 支持用户自行注册账户
+   - 基于 JWT (JSON Web Token) 的安全认证
+   - Token 有效期: 30 分钟
+
+2. 消息加密
+   - 所有聊天消息使用 AES-256-CBC 加密
+   - 用户可自定义加密密码
+   - 前端使用 CryptoJS 进行加密
+   - 后端使用 PyCryptodome 进行解密
+
+3. 实时用户状态
+   - 显示用户连接/断开通知
+   - 区分自己的消息和其他用户的消息
+   - 加密消息自动解密显示
+
+4. 多用户支持
+   - 支持多用户同时在线
+   - 多用户聊天时必须使用相同的加密密码
+   - 实时消息同步
+
+
+十四、项目结构
+========================================
+
+/root/minimal-chat/
+├── backend/
+│   ├── main.py           # 后端主程序
+│   ├── requirements.txt  # Python 依赖
+│   └── venv/            # 虚拟环境
+├── frontend/
+│   └── index.html        # 前端页面
+├── frp/                  # 内外网穿透配置
+├── docker/               # Docker 部署配置
+├── deploy.sh            # 自动部署脚本
+├── DEPLOY.md            # 本文档
+└── README.md            # 项目说明
+
+
+十五、快速参考
+========================================
+
+部署命令:
+  git clone https://github.com/fangbb-coder/privatechat.git /root/minimal-chat
+  cd /root/minimal-chat
+  chmod +x deploy.sh
+  sudo ./deploy.sh
+
+更新命令:
+  cd /root/minimal-chat
+  git pull origin main
+  systemctl restart minimal-chat
+
+重启服务:
+  systemctl restart minimal-chat
+
+查看日志:
+  journalctl -u minimal-chat -f
 
 ========================================
