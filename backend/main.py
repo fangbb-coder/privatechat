@@ -869,14 +869,47 @@ async def register(user_data: UserRegister, request: Request):
 
 @app.post("/token", response_model=TokenResponse)
 @limiter.limit("30/minute")
-async def login(form_data: UserLogin, request: Request):
+async def login(request: Request):
     """
     用户登录
     - 登录失败次数限制
     - IP 频率限制
+    - 支持 JSON 和表单数据两种格式
     """
     ip = get_remote_address(request)
-    username = form_data.username
+    
+    # 根据请求头解析数据
+    content_type = request.headers.get("content-type", "")
+    
+    if "application/json" in content_type:
+        # JSON 格式
+        try:
+            body = await request.json()
+            username = body.get("username", "")
+            password = body.get("password", "")
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid JSON data"
+            )
+    else:
+        # 表单数据格式
+        try:
+            form_data = await request.form()
+            username = form_data.get("username", "")
+            password = form_data.get("password", "")
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid form data"
+            )
+    
+    # 验证数据
+    if not username or not password:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="用户名和密码不能为空"
+        )
 
     logger.info(f"登录请求 - 用户名: {username}, IP: {ip}")
 
@@ -917,7 +950,7 @@ async def login(form_data: UserLogin, request: Request):
         )
 
     # 验证密码（使用 bcrypt）
-    if not PasswordHasher.verify_password(form_data.password, user["hashed_password"]):
+    if not PasswordHasher.verify_password(password, user["hashed_password"]):
         logger.warning(f"登录失败 - 密码错误: {username}")
 
         # 检查是否需要锁定账户（在记录失败尝试之前检查）

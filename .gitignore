@@ -38,3 +38,17 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Environment variables
+backend/.env
+data/.secret_key
+
+# Temporary files
+*.tmp
+*.temp
+
+# Deployment scripts (only use deploy.sh or deploy.ps1)
+setup_*.sh
+test_*.sh
+update_*.sh
+*.template
