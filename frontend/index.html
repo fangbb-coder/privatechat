@@ -608,6 +608,11 @@
       margin-right: 10px;
       background: white;
       color: #333;
+      /* 移动端优化：防止缩放和保持焦点 */
+      transform: translateZ(0);
+      -webkit-transform: translateZ(0);
+      /* 移动端防止键盘收起时布局跳动 */
+      position: relative;
     }
 
     [data-theme="dark"] #message-input {
@@ -1040,7 +1045,7 @@
     <!-- 认证表单 -->
     <div id="auth-forms">
       <div style="text-align: center; color: var(--text-secondary); font-size: 12px; padding: 10px;">
-        Private Chat v3.5.3 (2025-01-27) - 安全增强版
+        Private Chat v3.6.0 (2025-01-27) - 安全增强版
       </div>
 
       <!-- 登录表单 -->
@@ -1117,7 +1122,7 @@
       <div id="status">连接中...</div>
       <div id="chat"></div>
       <footer>
-        <input id="message-input" type="text" placeholder="输入消息..." />
+        <input id="message-input" type="text" placeholder="输入消息..." inputmode="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
         <div style="display: flex; gap: 8px;">
           <button id="emoji-toggle" onclick="toggleEmojiPicker()">😊</button>
           <button onclick="send()" id="send-btn">发送</button>
@@ -1733,7 +1738,7 @@
         }
 
         if (d.type === "online_users") {
-          updateOnlineUsers(d.users);
+          updateOnlineUsers(d.users, d.count);
           return;
         }
 
@@ -1974,6 +1979,11 @@
         const encryptedMsg = encrypt(message, encryptionKey);
         ws.send(JSON.stringify({ message: encryptedMsg, type: "message" }));
         input.value = "";
+        
+        // 移动端保持输入框焦点，防止键盘收起
+        setTimeout(() => {
+          input.focus();
+        }, 50);
       }
     }
 
@@ -1988,13 +1998,15 @@
     }
 
     // 更新在线用户列表
-    function updateOnlineUsers(users) {
+    function updateOnlineUsers(users, count) {
       const countEl = document.getElementById('online-count');
       const panelCountEl = document.getElementById('panel-online-count');
       const listEl = document.getElementById('online-users-list');
 
-      countEl.textContent = users.length;
-      panelCountEl.textContent = users.length;
+      // 使用后端发送的 count，确保显示正确的在线用户数
+      const onlineCount = count !== undefined ? count : users.length;
+      countEl.textContent = onlineCount;
+      panelCountEl.textContent = onlineCount;
 
       listEl.innerHTML = '';
       users.forEach(user => {
@@ -2066,6 +2078,7 @@
                   `<button class="btn-sm" onclick="enableUser('${user.username}')">启用</button>` :
                   `<button class="btn-sm btn-danger" onclick="disableUser('${user.username}')">禁用</button>`
                 }
+                <button class="btn-sm btn-danger" onclick="deleteUser('${user.username}')">删除</button>
               </div>
             `;
             listEl.appendChild(div);
@@ -2148,6 +2161,37 @@
 
         if (response.ok) {
           alert('用户已启用');
+          loadUsers();
+        } else {
+          const errorData = await response.json();
+          alert('操作失败: ' + (errorData.detail || '未知错误'));
+        }
+      } catch (error) {
+        alert('操作失败: ' + error.message);
+      }
+    }
+
+    // 删除用户
+    async function deleteUser(username) {
+      // 不能删除自己
+      if (username === currentUser) {
+        alert('不能删除自己');
+        return;
+      }
+
+      if (!confirm(`确定要删除用户 "${username}" 吗？此操作不可恢复！`)) return;
+
+      try {
+        const token = sessionStorage.getItem(`token_${currentUser}`);
+        const response = await fetch(`/api/admin/user/${username}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+
+        if (response.ok) {
+          alert('用户已删除');
           loadUsers();
         } else {
           const errorData = await response.json();
@@ -2462,6 +2506,8 @@
     // 回车发送
     document.getElementById("message-input").addEventListener("keypress", (e) => {
       if (e.key === "Enter") {
+        // 防止回车键导致输入框失去焦点
+        e.preventDefault();
         send();
       }
     });
