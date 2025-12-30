@@ -42,8 +42,8 @@ import sqlite3
 import json
 
 # 导入自定义模块
-from config import settings
-from logger import setup_logger, get_logger
+from utils.config import settings
+from utils.logger import setup_logger, get_logger
 from utils import (
     AESEncryptor,
     RSAKeyManager,
@@ -280,11 +280,12 @@ class UserDB:
                 try:
                     decrypted_username = self.encryptor.decrypt(row["username"])
                     encrypted_username = row["username"]
+                    decrypted_password = self.encryptor.decrypt(row["hashed_password"])
                     # 构建缓存
                     self._username_to_encrypted[decrypted_username] = encrypted_username
                     self._user_cache[decrypted_username] = {
                         "username": decrypted_username,
-                        "hashed_password": row["hashed_password"],  # bcrypt 哈希，不需要解密
+                        "hashed_password": decrypted_password,
                         "is_admin": bool(row["is_admin"]),
                         "is_disabled": bool(row["is_disabled"]),
                         "created_at": datetime.fromisoformat(row["created_at"]),
@@ -313,9 +314,10 @@ class UserDB:
                 try:
                     decrypted_username = self.encryptor.decrypt(row["username"])
                     if decrypted_username == username:
+                        decrypted_password = self.encryptor.decrypt(row["hashed_password"])
                         return {
                             "username": decrypted_username,
-                            "hashed_password": row["hashed_password"],  # bcrypt 哈希，不需要解密
+                            "hashed_password": decrypted_password,
                             "is_admin": bool(row["is_admin"]),
                             "is_disabled": bool(row["is_disabled"]),
                             "created_at": datetime.fromisoformat(row["created_at"]),

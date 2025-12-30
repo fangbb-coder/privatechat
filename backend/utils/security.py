@@ -5,8 +5,8 @@
 from typing import Dict, Optional, Tuple
 from datetime import datetime, timedelta
 from collections import defaultdict
-from config import settings
-from logger import get_logger
+from utils.config import settings
+from utils.logger import get_logger
 
 logger = get_logger()
 

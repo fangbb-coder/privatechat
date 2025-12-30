@@ -12,7 +12,7 @@ import base64
 import hashlib
 from typing import Tuple, Optional
 import os
-from logger import get_logger
+from utils.logger import get_logger
 
 logger = get_logger()
 
@@ -288,7 +288,7 @@ class DatabaseEncryptor:
         Args:
             encryption_key: 加密密钥，如果为 None 则使用配置中的默认密钥
         """
-        from config import settings
+        from utils.config import settings
         self.key = encryption_key or settings.secret_key
         # 使用密钥派生函数生成固定长度的 AES 密钥
         self.aes_key = hashlib.sha256(self.key.encode()).digest()
