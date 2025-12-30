@@ -173,7 +173,7 @@ class PasswordHasher:
                 plain_password.encode('utf-8'),
                 hashed_password.encode('utf-8')
             )
-        except (ValueError, TypeError, bcrypt.exceptions.BcryptError) as e:
+        except (ValueError, TypeError, Exception) as e:
             logger.warning(f"密码验证失败: {type(e).__name__}")
             return False
 
@@ -217,6 +217,65 @@ class PasswordValidator:
                 return False, "密码必须包含至少一个特殊字符 (!@#$%^&*()_+-=[]{}|;:,.<>?)"
 
         return True, ""
+
+
+class RSAEncryptor:
+    """RSA 加密器 - 用于加密敏感数据（如登录密码）"""
+
+    @staticmethod
+    def encrypt(plaintext: str, public_key_pem: str) -> str:
+        """
+        使用 RSA 公钥加密数据
+
+        Args:
+            plaintext: 要加密的明文
+            public_key_pem: PEM 格式的公钥
+
+        Returns:
+            Base64 编码的密文
+        """
+        public_key = RSA.import_key(public_key_pem)
+        cipher = PKCS1_OAEP.new(public_key)
+        encrypted = cipher.encrypt(plaintext.encode('utf-8'))
+        return base64.b64encode(encrypted).decode('utf-8')
+
+    @staticmethod
+    def decrypt(ciphertext: str, private_key_pem: str) -> str:
+        """
+        使用 RSA 私钥解密数据（支持 PKCS#1 v1.5 和 OAEP 两种格式）
+
+        Args:
+            ciphertext: Base64 编码的密文
+            private_key_pem: PEM 格式的私钥
+
+        Returns:
+            解密后的明文
+
+        Raises:
+            ValueError: 解密失败时抛出
+        """
+        try:
+            private_key = RSA.import_key(private_key_pem)
+            encrypted_data = base64.b64decode(ciphertext.encode('utf-8'))
+            
+            # 先尝试使用 PKCS#1 v1.5 解密（JSEncrypt 默认格式）
+            try:
+                from Crypto.Cipher import PKCS1_v1_5
+                cipher = PKCS1_v1_5.new(private_key)
+                sentinel = b'decrypt_error'
+                decrypted = cipher.decrypt(encrypted_data, sentinel)
+                if decrypted != sentinel:
+                    return decrypted.decode('utf-8')
+            except Exception:
+                pass
+            
+            # 如果 PKCS#1 v1.5 失败，尝试使用 OAEP 解密
+            cipher = PKCS1_OAEP.new(private_key)
+            decrypted = cipher.decrypt(encrypted_data)
+            return decrypted.decode('utf-8')
+            
+        except Exception as e:
+            raise ValueError(f"RSA 解密失败: {str(e)}")
 
 
 class DatabaseEncryptor:

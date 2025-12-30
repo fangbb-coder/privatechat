@@ -53,6 +53,7 @@ from utils import (
     IPRateLimiter,
     WSConnectionRateLimiter,
     DatabaseEncryptor,
+    RSAEncryptor,
     mask_sensitive_data
 )
 from models.user import (
@@ -259,14 +260,14 @@ class UserDB:
 
     def add_user(self, username: str, hashed_password: str):
         """添加用户"""
-        # 加密敏感字段
+        # 加密用户名
         encrypted_username = self.encryptor.encrypt(username)
-        encrypted_password = self.encryptor.encrypt(hashed_password)
+        # hashed_password 已经是 bcrypt 哈希，不需要再次加密
 
         with self._get_connection() as conn:
             conn.execute(
                 "INSERT INTO users (username, hashed_password, is_admin, is_disabled, created_at) VALUES (?, ?, ?, ?, ?)",
-                (encrypted_username, encrypted_password, 0, 0, datetime.now().isoformat())
+                (encrypted_username, hashed_password, 0, 0, datetime.now().isoformat())
             )
             conn.commit()
             logger.info(f"新用户注册: {username}")
@@ -283,14 +284,14 @@ class UserDB:
                     self._username_to_encrypted[decrypted_username] = encrypted_username
                     self._user_cache[decrypted_username] = {
                         "username": decrypted_username,
-                        "hashed_password": self.encryptor.decrypt(row["hashed_password"]),
+                        "hashed_password": row["hashed_password"],  # bcrypt 哈希，不需要解密
                         "is_admin": bool(row["is_admin"]),
                         "is_disabled": bool(row["is_disabled"]),
                         "created_at": datetime.fromisoformat(row["created_at"]),
-                        "_encrypted_username": encrypted_username  # 保存加密用户名用于更新操作
+                        "_encrypted_username": encrypted_username
                     }
                 except Exception as e:
-                    logger.warning(f"构建缓存时解密失败: {e}")
+                    logger.warning(f"构建缓存失败: {str(e)}")
                     continue
             logger.info(f"用户缓存构建完成，缓存用户数: {len(self._user_cache)}")
 
@@ -314,7 +315,7 @@ class UserDB:
                     if decrypted_username == username:
                         return {
                             "username": decrypted_username,
-                            "hashed_password": self.encryptor.decrypt(row["hashed_password"]),
+                            "hashed_password": row["hashed_password"],  # bcrypt 哈希，不需要解密
                             "is_admin": bool(row["is_admin"]),
                             "is_disabled": bool(row["is_disabled"]),
                             "created_at": datetime.fromisoformat(row["created_at"]),
@@ -875,6 +876,7 @@ async def login(request: Request):
     - 登录失败次数限制
     - IP 频率限制
     - 支持 JSON 和表单数据两种格式
+    - 支持密码加密传输（RSA 加密）
     """
     ip = get_remote_address(request)
     
@@ -887,6 +889,7 @@ async def login(request: Request):
             body = await request.json()
             username = body.get("username", "")
             password = body.get("password", "")
+            encrypted_password = body.get("encrypted_password", "")
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -898,10 +901,24 @@ async def login(request: Request):
             form_data = await request.form()
             username = form_data.get("username", "")
             password = form_data.get("password", "")
+            encrypted_password = form_data.get("encrypted_password", "")
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Invalid form data"
+            )
+    
+    # 如果提供了加密密码，则解密
+    if encrypted_password:
+        try:
+            password = RSAEncryptor.decrypt(encrypted_password, private_key_pem.decode('utf-8'))
+            logger.debug(f"使用加密密码登录 - 用户名: {username}")
+            logger.debug(f"解密后的密码长度: {len(password)}")
+        except Exception as e:
+            logger.warning(f"密码解密失败: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="密码解密失败，请刷新页面重试"
             )
     
     # 验证数据
@@ -950,6 +967,8 @@ async def login(request: Request):
         )
 
     # 验证密码（使用 bcrypt）
+    logger.debug(f"准备验证密码 - 用户名: {username}, 密码长度: {len(password)}")
+    logger.debug(f"数据库中的哈希密码: {user['hashed_password'][:50]}...")
     if not PasswordHasher.verify_password(password, user["hashed_password"]):
         logger.warning(f"登录失败 - 密码错误: {username}")
 

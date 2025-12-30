@@ -6,7 +6,8 @@ from .encryption import (
     RSAKeyManager,
     PasswordHasher,
     PasswordValidator,
-    DatabaseEncryptor
+    DatabaseEncryptor,
+    RSAEncryptor
 )
 from .security import (
     LoginAttemptTracker,
@@ -24,6 +25,7 @@ __all__ = [
     'PasswordHasher',
     'PasswordValidator',
     'DatabaseEncryptor',
+    'RSAEncryptor',
     'LoginAttemptTracker',
     'IPRateLimiter',
     'WSConnectionRateLimiter',

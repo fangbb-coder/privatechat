@@ -1196,18 +1196,45 @@
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jsencrypt/3.3.2/jsencrypt.min.js"></script>
   <script>
     let ws = null;
     let currentUser = null;
-    let authToken = null;  // 当前用户的访问令牌
+    let authToken = null;
     let encryptionKey = null;
+    let rsaPublicKey = null;
     let reconnectAttempts = 0;
     const maxReconnectAttempts = 5;
     const reconnectDelay = 3000;
     let heartbeatInterval = null;
     let isAdmin = false;
-    let messages = {}; // 存储消息信息
+    let messages = {};
     let currentTheme = localStorage.getItem('theme') || 'light';
+
+    // 获取 RSA 公钥
+    async function getRSAPublicKey() {
+      try {
+        const response = await fetch('/api/public-key');
+        const data = await response.json();
+        rsaPublicKey = data.public_key;
+        return rsaPublicKey;
+      } catch (error) {
+        console.error('获取 RSA 公钥失败:', error);
+        return null;
+      }
+    }
+
+    // RSA 加密
+    function rsaEncrypt(plaintext) {
+      if (!rsaPublicKey) {
+        console.error('RSA 公钥未加载');
+        return null;
+      }
+      const encrypt = new JSEncrypt();
+      encrypt.setPublicKey(rsaPublicKey);
+      const encrypted = encrypt.encrypt(plaintext);
+      return encrypted;
+    }
 
     // XSS防护函数
     function escapeHTML(str) {
@@ -1635,6 +1662,18 @@
       loginBtn.textContent = "登录中...";
 
       try {
+        // 获取 RSA 公钥
+        const publicKey = await getRSAPublicKey();
+        if (!publicKey) {
+          throw new Error("无法获取加密密钥，请刷新页面重试");
+        }
+
+        // 使用 RSA 加密密码
+        const encryptedPassword = rsaEncrypt(password);
+        if (!encryptedPassword) {
+          throw new Error("密码加密失败，请刷新页面重试");
+        }
+
         const response = await fetch("/token", {
           method: "POST",
           headers: {
@@ -1642,7 +1681,7 @@
           },
           body: JSON.stringify({
             username: username,
-            password: password
+            encrypted_password: encryptedPassword
           })
         });
 

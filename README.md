@@ -6,6 +6,13 @@
 - ✅ **管理员删除用户功能**：管理员可以删除用户账户（不能删除自己）
 - ✅ **移动端键盘优化**：发送消息后键盘不收起，输入框保持焦点
 - ✅ **在线用户数显示修复**：正确显示在线用户数量
+- ✅ **RSA 加密登录**：登录密码使用 RSA-2048 加密传输，防止明文泄露
+
+### 安全增强
+- ✅ **RSA-2048 密钥交换**：登录密码使用非对称加密传输
+- ✅ **PKCS#1 v1.5 兼容**：支持 JSEncrypt 前端库加密格式
+- ✅ **密码传输加密**：网络抓包无法获取明文密码
+- ✅ **修复密码存储问题**：bcrypt 哈希不再二次加密
 
 ### 全面安全升级
 - ✅ **修复裸露的 except 语句**：所有异常捕获都使用具体异常类型
@@ -274,6 +281,7 @@ chmod +x deploy.sh
 - ✅ 会话固定保护（限制活跃会话数）
 
 #### 2. 传输安全
+- ✅ **RSA-2048 登录密码加密**：登录密码使用非对称加密传输，防止明文泄露
 - ✅ AES-256-CBC 消息加密
 - ✅ RSA-2048 密钥交换
 - ✅ WebSocket 连接时验证 Token
@@ -362,7 +370,15 @@ chmod +x deploy.sh
 ### POST /token
 用户登录，获取 JWT token
 
-**请求参数:**
+**请求参数（推荐使用加密密码）:**
+```json
+{
+  "username": "admin",
+  "encrypted_password": "RSA加密后的密码"
+}
+```
+
+**请求参数（兼容明文密码）:**
 ```json
 {
   "username": "admin",
@@ -377,6 +393,28 @@ chmod +x deploy.sh
   "refresh_token": "eyJhbGciOiJIUzI1NiIs...",
   "token_type": "bearer",
   "username": "admin"
+}
+```
+
+**说明:**
+- 前端使用 JSEncrypt 库通过 RSA-2048 加密密码
+- 后端使用 PKCS#1 v1.5 解密（兼容 JSEncrypt）
+- 网络传输中密码为加密状态，防止抓包泄露
+- 同时支持明文密码（向后兼容）
+
+### GET /api/public-key
+获取 RSA 公钥（用于加密登录密码）
+
+**响应:**
+```json
+{
+  "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...\n-----END PUBLIC KEY-----",
+  "key_size": 2048,
+  "encryption_details": {
+    "aes": "AES-256-CBC",
+    "rsa": "RSA-2048",
+    "password_hash": "bcrypt"
+  }
 }
 ```
 
