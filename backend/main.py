@@ -40,6 +40,8 @@ import secrets
 import uuid
 import sqlite3
 import json
+from pydantic import ValidationError
+from fastapi.exceptions import RequestValidationError
 
 # 导入自定义模块
 from utils.config import settings
@@ -80,6 +82,30 @@ app = FastAPI(
     version=settings.app_version,
     description="安全的私有加密聊天系统 - 支持 AES-256 加密、JWT 认证、消息撤回等功能"
 )
+
+# ==================== 全局异常处理器 ====================
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """处理 Pydantic 验证错误"""
+    errors = exc.errors()
+    error_msg = errors[0]['msg'] if errors else "请求参数验证失败"
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": error_msg}
+    )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """全局异常处理器（处理未捕获的异常）"""
+    # 如果是 HTTPException，让 FastAPI 的默认处理器处理
+    if isinstance(exc, HTTPException):
+        raise exc
+    
+    logger.error(f"未处理的异常: {type(exc).__name__}: {str(exc)}", exc_info=True)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": str(exc)}
+    )
 
 # ==================== CORS 配置 ====================
 # 配置 CORS 中间件
@@ -271,6 +297,8 @@ class UserDB:
             )
             conn.commit()
             logger.info(f"新用户注册: {username}")
+            # 更新缓存
+            self._update_cache(username)
 
     def _build_cache(self):
         """构建用户缓存以提高查询性能"""
@@ -280,7 +308,13 @@ class UserDB:
                 try:
                     decrypted_username = self.encryptor.decrypt(row["username"])
                     encrypted_username = row["username"]
-                    decrypted_password = self.encryptor.decrypt(row["hashed_password"])
+                    # 尝试解密密码哈希，如果失败则直接使用原始值
+                    # （兼容旧数据：管理员密码哈希被加密，新用户密码哈希未加密）
+                    try:
+                        decrypted_password = self.encryptor.decrypt(row["hashed_password"])
+                    except Exception:
+                        decrypted_password = row["hashed_password"]
+                    
                     # 构建缓存
                     self._username_to_encrypted[decrypted_username] = encrypted_username
                     self._user_cache[decrypted_username] = {
@@ -314,7 +348,13 @@ class UserDB:
                 try:
                     decrypted_username = self.encryptor.decrypt(row["username"])
                     if decrypted_username == username:
-                        decrypted_password = self.encryptor.decrypt(row["hashed_password"])
+                        # 尝试解密密码哈希，如果失败则直接使用原始值
+                        # （兼容旧数据：管理员密码哈希被加密，新用户密码哈希未加密）
+                        try:
+                            decrypted_password = self.encryptor.decrypt(row["hashed_password"])
+                        except Exception:
+                            decrypted_password = row["hashed_password"]
+                        
                         return {
                             "username": decrypted_username,
                             "hashed_password": decrypted_password,
@@ -328,18 +368,18 @@ class UserDB:
                     continue
             return None
 
-    def get_user(self, username: str) -> Optional[dict]:
+    def get_user(self, username: str, force_refresh: bool = False) -> Optional[dict]:
         """获取用户信息（优先从缓存获取）"""
-        # 先尝试从缓存获取
-        if username in self._user_cache:
-            return self._user_cache[username]
-
-        # 缓存中不存在，从数据库获取并更新缓存
-        user = self._get_user_from_db(username)
-        if user:
-            self._user_cache[username] = user
-            self._username_to_encrypted[username] = user["_encrypted_username"]
-        return user
+        # 强制刷新或缓存中不存在时，从数据库获取
+        if force_refresh or username not in self._user_cache:
+            user = self._get_user_from_db(username)
+            if user:
+                self._user_cache[username] = user
+                self._username_to_encrypted[username] = user["_encrypted_username"]
+            return user
+        
+        # 从缓存获取
+        return self._user_cache[username]
 
     def is_disabled(self, username: str) -> bool:
         """检查用户是否被禁用"""
@@ -386,10 +426,10 @@ class UserDB:
             if username in self._username_to_encrypted:
                 del self._username_to_encrypted[username]
 
-    def change_password(self, username: str, new_hashed_password: str):
+    def change_password(self, username: str, new_plain_password: str):
         """修改密码（带密码历史检查）"""
-        # 检查密码历史
-        if self.is_password_in_history(username, new_hashed_password):
+        # 检查密码历史（使用明文密码）
+        if self.is_password_in_history(username, new_plain_password):
             logger.warning(f"用户尝试使用历史密码: {username}")
             raise ValueError("不能使用最近使用过的密码")
 
@@ -398,12 +438,15 @@ class UserDB:
             logger.warning(f"修改密码失败: 用户不存在 - {username}")
             return
 
+        # 哈希新密码
+        new_hashed_password = PasswordHasher.hash_password(new_plain_password)
+
         # 加密新密码
         encrypted_password = self.encryptor.encrypt(new_hashed_password)
 
         with self._get_connection() as conn:
-            # 先添加旧密码到历史记录
-            user = self.get_user(username)
+            # 先添加旧密码到历史记录（强制从数据库读取最新密码）
+            user = self.get_user(username, force_refresh=True)
             if user:
                 old_password = user["hashed_password"]
                 encrypted_old_password = self.encryptor.encrypt(old_password)
@@ -426,12 +469,9 @@ class UserDB:
                 # 更新缓存
                 self._update_cache(username)
 
-    def is_password_in_history(self, username: str, new_hashed_password: str) -> bool:
+    def is_password_in_history(self, username: str, new_plain_password: str) -> bool:
         """检查新密码是否在历史记录中"""
         with self._get_connection() as conn:
-            # 加密新密码用于比较
-            encrypted_new_password = self.encryptor.encrypt(new_hashed_password)
-
             # 获取该用户最近的密码历史
             rows = conn.execute("""
                 SELECT hashed_password FROM password_history
@@ -443,7 +483,7 @@ class UserDB:
                     # 解密历史密码
                     old_password = self.encryptor.decrypt(row["hashed_password"])
                     # 比较密码哈希（bcrypt 是通过 verify 来比较的）
-                    if PasswordHasher.verify_password(new_hashed_password, old_password):
+                    if PasswordHasher.verify_password(new_plain_password, old_password):
                         return True
                 except Exception as e:
                     logger.debug(f"检查密码历史时解密失败: {e}")
@@ -949,8 +989,8 @@ async def login(request: Request):
             detail=f"账户已被锁定，请 {remaining} 分钟后重试"
         )
 
-    # 检查用户是否存在
-    user = user_db.get_user(username)
+    # 检查用户是否存在（强制从数据库读取，确保获取最新密码）
+    user = user_db.get_user(username, force_refresh=True)
     if not user:
         logger.warning(f"登录失败 - 用户不存在: {username}")
         login_tracker.record_attempt(username, ip, False)
@@ -1138,11 +1178,26 @@ async def change_password(
             detail=error_msg
         )
 
+    # 检查新密码是否与当前密码相同
+    if PasswordHasher.verify_password(password_data.new_password, current_user["hashed_password"]):
+        logger.warning(f"修改密码失败 - 新密码与当前密码相同: {username}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="新密码不能与现用密码相同"
+        )
+
     # 哈希新密码
     new_hashed_password = PasswordHasher.hash_password(password_data.new_password)
 
-    # 更新密码
-    user_db.change_password(username, new_hashed_password)
+    # 更新密码（传入明文密码用于历史检查）
+    try:
+        user_db.change_password(username, password_data.new_password)
+    except ValueError as e:
+        logger.warning(f"修改密码失败 - {str(e)}: {username}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="不建议使用旧密码"
+        )
 
     logger.info(f"密码修改成功: {username}")
     return {"message": "密码修改成功"}

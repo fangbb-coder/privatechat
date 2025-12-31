@@ -49,12 +49,6 @@ class UserChangePassword(BaseModel):
             raise ValueError("旧密码不能为空")
         return v
 
-    @validator('new_password')
-    def new_passwords_must_be_different(cls, v, values):
-        if 'old_password' in values and v == values['old_password']:
-            raise ValueError("新密码不能与旧密码相同")
-        return v
-
 
 class UserInfo(BaseModel):
     """用户信息模型"""
