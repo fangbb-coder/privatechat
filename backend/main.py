@@ -121,7 +121,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # ==================== CORS 配置 ====================
 # 配置 CORS 中间件
-allowed_origins = settings.allowed_origins if settings.allowed_origins else []
+allowed_origins = settings.allowed_origins_list
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -180,12 +180,12 @@ if settings.environment != "development":
 
 # 添加受信任主机中间件（生产环境）- H3: 从配置读取，禁止 ["*"]
 if settings.environment == "production":
-    if not settings.allowed_hosts or "*" in settings.allowed_hosts:
+    if not settings.allowed_hosts_list or "*" in settings.allowed_hosts_list:
         # 配置校验已在 Settings 中拦截，这里做二次防御
         raise RuntimeError("生产环境必须配置具体的 ALLOWED_HOSTS，且不能为 ['*']")
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=settings.allowed_hosts
+        allowed_hosts=settings.allowed_hosts_list
     )
 
 # 挂载静态文件目录
@@ -1533,8 +1533,9 @@ async def chat(ws: WebSocket):
     """
     # 验证 Origin 头部
     origin = ws.headers.get("origin")
-    if origin and "*" not in settings.ws_allowed_origins:
-        if origin not in settings.ws_allowed_origins:
+    ws_origins = settings.ws_allowed_origins_list
+    if origin and "*" not in ws_origins:
+        if origin not in ws_origins:
             logger.warning(f"WebSocket连接被拒绝 - Origin验证失败: {origin}")
             await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="Origin not allowed")
             return

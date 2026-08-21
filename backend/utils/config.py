@@ -110,30 +110,16 @@ class Settings(BaseSettings):
     )
 
     # ==================== CORS / Host（H3）====================
-    allowed_origins: List[str] = Field(default_factory=list)
-    allowed_hosts: List[str] = Field(default_factory=list)
-    ws_allowed_origins: List[str] = Field(default_factory=lambda: ["*"])
+    # 存储为字符串，通过 property 派生列表，避免 pydantic-settings 对 List 字段做 JSON 解析
+    allowed_origins: str = Field(default="", description="允许的前端来源，逗号分隔")
+    allowed_hosts: str = Field(default="", description="受信任主机，逗号分隔")
+    ws_allowed_origins: str = Field(default="*", description="WebSocket 允许的来源，逗号分隔")
 
     # ==================== 日志 ====================
     log_level: str = "INFO"
     log_dir: str = Field(default_factory=lambda: str(BASE_DIR / "logs"))
 
     # ==================== 解析器 ====================
-    @field_validator("allowed_origins", mode="before")
-    @classmethod
-    def _parse_allowed_origins(cls, v):
-        return _parse_origins(v)
-
-    @field_validator("ws_allowed_origins", mode="before")
-    @classmethod
-    def _parse_ws_origins(cls, v):
-        return _parse_origins(v)
-
-    @field_validator("allowed_hosts", mode="before")
-    @classmethod
-    def _parse_allowed_hosts(cls, v):
-        return _parse_origins(v)
-
     @field_validator("environment")
     @classmethod
     def _normalize_env(cls, v):
@@ -155,13 +141,13 @@ class Settings(BaseSettings):
                 errors.append("production 环境 SECRET_KEY 长度必须 >= 32")
             if not self.db_encryption_key or len(self.db_encryption_key) < 32:
                 errors.append("production 环境 DB_ENCRYPTION_KEY 长度必须 >= 32")
-            if not self.allowed_origins:
+            if not self.allowed_origins_list:
                 errors.append("production 环境必须配置 ALLOWED_ORIGINS")
-            if not self.allowed_hosts:
+            if not self.allowed_hosts_list:
                 errors.append("production 环境必须配置 ALLOWED_HOSTS")
-            if "*" in self.allowed_hosts:
+            if "*" in self.allowed_hosts_list:
                 errors.append("production 环境 ALLOWED_HOSTS 不能为 ['*']")
-            if "*" in self.ws_allowed_origins:
+            if "*" in self.ws_allowed_origins_list:
                 warnings.warn("生产环境 WS_ALLOWED_ORIGINS 含 '*'，建议配置具体域名")
 
         if self.min_password_length < 8:
@@ -178,6 +164,18 @@ class Settings(BaseSettings):
     @property
     def admin_username_list(self) -> List[str]:
         return [u.strip() for u in self.admin_usernames.split(",") if u.strip()]
+
+    @property
+    def allowed_origins_list(self) -> List[str]:
+        return _parse_origins(self.allowed_origins)
+
+    @property
+    def allowed_hosts_list(self) -> List[str]:
+        return _parse_origins(self.allowed_hosts)
+
+    @property
+    def ws_allowed_origins_list(self) -> List[str]:
+        return _parse_origins(self.ws_allowed_origins)
 
     @property
     def is_production(self) -> bool:

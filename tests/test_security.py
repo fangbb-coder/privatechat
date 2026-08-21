@@ -38,7 +38,7 @@ def test_config_loads_and_validation():
 
     # 生产环境必须有密钥和 host，应抛错
     with pytest.raises(Exception):
-        Settings(environment="production", allowed_origins=[], allowed_hosts=[])
+        Settings(environment="production", allowed_origins="", allowed_hosts="")
 
 
 def test_aes_message_roundtrip():
