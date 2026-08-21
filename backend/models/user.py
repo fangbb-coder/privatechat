@@ -86,6 +86,19 @@ class MessageRecall(BaseModel):
     message_id: str
 
 
+class AdminDeleteUserRequest(BaseModel):
+    """管理员删除用户请求（H7: 二次确认）
+
+    要求管理员输入自身密码以确认删除操作。
+    """
+    admin_password: str = Field(..., min_length=1, max_length=64, description="管理员密码（二次确认）")
+
+
+class AdminActionConfirm(BaseModel):
+    """管理员敏感操作二次确认基类"""
+    admin_password: str = Field(..., min_length=1, max_length=64, description="管理员密码（二次确认）")
+
+
 class OnlineUser(BaseModel):
     """在线用户模型"""
     username: str

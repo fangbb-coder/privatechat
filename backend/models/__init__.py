@@ -7,11 +7,14 @@ from .user import (
     UserChangePassword,
     UserInfo,
     TokenResponse,
+    RefreshTokenRequest,
     Message,
     MessageRecall,
     OnlineUser,
     SystemAnnouncement,
-    StatsResponse
+    StatsResponse,
+    AdminDeleteUserRequest,
+    AdminActionConfirm,
 )
 
 __all__ = [
@@ -20,9 +23,12 @@ __all__ = [
     'UserChangePassword',
     'UserInfo',
     'TokenResponse',
+    'RefreshTokenRequest',
     'Message',
     'MessageRecall',
     'OnlineUser',
     'SystemAnnouncement',
-    'StatsResponse'
+    'StatsResponse',
+    'AdminDeleteUserRequest',
+    'AdminActionConfirm',
 ]
