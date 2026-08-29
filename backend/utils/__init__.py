@@ -9,7 +9,10 @@ from .encryption import (
     PasswordHasher,
     PasswordValidator,
     DatabaseEncryptor,
-    RSAEncryptor
+    RSAEncryptor,
+    MessageEncryptor,
+    decrypt_session_key,
+    get_public_key_fingerprint
 )
 from .security import (
     LoginAttemptTracker,
@@ -31,6 +34,9 @@ __all__ = [
     'PasswordValidator',
     'DatabaseEncryptor',
     'RSAEncryptor',
+    'MessageEncryptor',
+    'decrypt_session_key',
+    'get_public_key_fingerprint',
     'LoginAttemptTracker',
     'IPRateLimiter',
     'WSConnectionRateLimiter',

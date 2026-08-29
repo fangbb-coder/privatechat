@@ -94,7 +94,10 @@ class Settings(BaseSettings):
     max_message_length: int = 5000
     # M2: messages 字典最大条数，防止内存泄漏
     max_stored_messages: int = 1000
-    default_encryption_key: str = "PrivateChat2025Secure!"
+
+    # ==================== TLS 强制（MITM 防护）====================
+    # 生产环境强制 HTTPS，拒绝 HTTP 明文请求
+    force_tls: bool = Field(True, description="生产环境强制 HTTPS（拒绝 X-Forwarded-Proto != https 的请求）")
 
     # ==================== RSA ====================
     rsa_key_size: int = 2048

@@ -56,6 +56,9 @@ from utils import (
     WSConnectionRateLimiter,
     DatabaseEncryptor,
     RSAEncryptor,
+    MessageEncryptor,
+    decrypt_session_key,
+    get_public_key_fingerprint,
     mask_sensitive_data
 )
 from models.user import (
@@ -187,6 +190,26 @@ if settings.environment == "production":
         TrustedHostMiddleware,
         allowed_hosts=settings.allowed_hosts_list
     )
+
+# 添加强制 TLS 中间件（生产环境）- MITM 防护：拒绝 HTTP 明文请求
+if settings.force_tls and settings.is_production:
+    class ForceTLSMiddleware(BaseHTTPMiddleware):
+        """强制 HTTPS 中间件
+
+        生产环境拒绝 X-Forwarded-Proto != https 的请求，
+        防止 HTTP 明文传输下的 MITM 攻击。
+        """
+        async def dispatch(self, request: StarletteRequest, call_next):
+            proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+            if proto and proto != "https":
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={"detail": "生产环境要求 HTTPS 访问"}
+                )
+            return await call_next(request)
+
+    app.add_middleware(ForceTLSMiddleware)
+    logger.info("已启用强制 TLS 中间件（生产环境拒绝 HTTP 请求）")
 
 # 挂载静态文件目录
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
@@ -959,14 +982,16 @@ async def get_stats(current_user: dict = Depends(get_current_user)):
 
 @app.get("/api/public-key")
 async def get_public_key():
-    """获取 RSA 公钥（用于密钥交换）"""
+    """获取 RSA 公钥（用于密钥交换）+ 公钥指纹（TOFU 校验）"""
     return {
         "public_key": public_key_pem.decode('utf-8'),
+        "public_key_fingerprint": get_public_key_fingerprint(public_key_pem),
         "key_size": settings.rsa_key_size,
         "encryption_details": {
-            "aes": "AES-256-CBC",
-            "rsa": f"RSA-{settings.rsa_key_size}",
-            "password_hash": "bcrypt"
+            "aes": "AES-256-GCM",
+            "rsa": f"RSA-{settings.rsa_key_size}-OAEP-SHA256",
+            "password_hash": "bcrypt",
+            "key_exchange": "RSA-OAEP session key encapsulation"
         }
     }
 
@@ -1505,7 +1530,7 @@ async def send_announcement(
     # 广播系统公告
     for client in clients:
         try:
-            encrypted_msg = AESEncryptor.encrypt(announcement.message, client["encryption_key"])
+            encrypted_msg = client["msg_encryptor"].encrypt(announcement.message)
             await client["ws"].send_json({
                 "type": "announcement",
                 "message": encrypted_msg,
@@ -1549,13 +1574,27 @@ async def chat(ws: WebSocket):
         # 第一步：接收认证信息
         auth_data = await ws.receive_json()
         token = auth_data.get("token")
-        encryption_key = auth_data.get("encryption_key", settings.default_encryption_key)
+        encrypted_session_key = auth_data.get("encrypted_session_key")
+
+        if not encrypted_session_key:
+            await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="缺少加密会话密钥")
+            return
 
         # 检查连接频率
         client_ip = ws.client.host
         if not ws_connection_rate_limiter.check_rate_limit(client_ip):
             await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="连接频率过高，请稍后再试")
             return
+
+        # RSA-OAEP 解密 session key（MITM 防护：不再明文传输加密密钥）
+        try:
+            session_key = decrypt_session_key(encrypted_session_key, private_key_pem)
+        except ValueError:
+            await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="会话密钥解密失败")
+            return
+
+        # 创建消息加密器（AES-256-GCM，带认证标签防篡改）
+        msg_encryptor = MessageEncryptor(session_key)
 
         # 验证 JWT token
         try:
@@ -1592,7 +1631,7 @@ async def chat(ws: WebSocket):
             "ws": ws,
             "username": username,
             "client_id": client_id,
-            "encryption_key": encryption_key,
+            "msg_encryptor": msg_encryptor,
             "connected_at": int(time.time())
         }
         clients.append(client_info)
@@ -1607,12 +1646,12 @@ async def chat(ws: WebSocket):
             "is_admin": user["is_admin"]
         })
 
-        # 通知其他用户
+        # 通知其他用户（每个客户端用自己的 session key 加密）
         system_msg = f"用户 {username} 已加入聊天"
-        encrypted_system_msg = AESEncryptor.encrypt(system_msg, encryption_key)
         for client in clients:
             if client["ws"] != ws:
                 try:
+                    encrypted_system_msg = client["msg_encryptor"].encrypt(system_msg)
                     await client["ws"].send_json({
                         "type": "system",
                         "message": encrypted_system_msg,
@@ -1678,9 +1717,9 @@ async def chat(ws: WebSocket):
             # 处理聊天消息
             message_content = data.get("message", "")
 
-            # 解密消息
+            # 解密消息（AES-256-GCM）
             try:
-                decrypted_msg = AESEncryptor.decrypt(message_content, encryption_key)
+                decrypted_msg = msg_encryptor.decrypt(message_content)
             except Exception as e:
                 await ws.send_json({
                     "type": "error",
@@ -1718,15 +1757,14 @@ async def chat(ws: WebSocket):
                 for old_id in sorted_ids[:excess]:
                     messages.pop(old_id, None)
 
-            # 加密消息（使用 CBC 模式与前端兼容）
-            encrypted_msg = AESEncryptor.encrypt(decrypted_msg, encryption_key)
-
-            # 广播消息
+            # 广播消息（每个客户端用自己的 session key 加密）
             user = user_db.get_user(username)
             is_user_admin = user["is_admin"] if user else False
             for client in clients:
                 try:
                     is_sender = client["username"] == username
+                    # 为每个客户端单独加密（不同的 session key）
+                    encrypted_msg = client["msg_encryptor"].encrypt(decrypted_msg)
                     await client["ws"].send_json({
                         "type": "message",
                         "message_id": message_id,
@@ -1758,8 +1796,8 @@ async def chat(ws: WebSocket):
             system_msg = f"用户 {username} 已离开聊天"
             for client in clients:
                 try:
-                    # 使用每个用户自己的加密密钥来加密系统消息（CBC 模式）
-                    encrypted_system_msg = AESEncryptor.encrypt(system_msg, client["encryption_key"])
+                    # 使用每个用户自己的 session key 加密系统消息
+                    encrypted_system_msg = client["msg_encryptor"].encrypt(system_msg)
                     await client["ws"].send_json({
                         "type": "system",
                         "message": encrypted_system_msg,

@@ -3,10 +3,13 @@
 提供 AES、RSA 加密解密功能
 
 安全说明：
-- 消息加密 (AESEncryptor)：AES-256-CBC，与前端 CryptoJS 兼容，KDF 使用 SHA-256（前端约定）
+- 消息加密 (MessageEncryptor)：AES-256-GCM，与浏览器 Web Crypto API 兼容，
+  使用 RSA-OAEP 协商的随机 session key，无需弱 KDF，带认证标签防篡改
+- 旧消息加密 (AESEncryptor)：AES-256-CBC，保留用于向后兼容旧消息
 - 数据库字段加密 (DatabaseEncryptor)：AES-256-GCM，使用独立的 DB_ENCRYPTION_KEY（H2 密钥分离），
   KDF 使用 PBKDF2-SHA256（H1 强 KDF）
 - RSA 解密 (RSAEncryptor)：统一错误路径与恒定时间处理，降低填充预言风险（H6）
+- RSA session key 解密 (decrypt_session_key)：RSA-OAEP(SHA-256)，与 Web Crypto API 兼容
 """
 import base64
 import hashlib
@@ -17,6 +20,7 @@ from typing import Tuple, Optional
 from Crypto.Cipher import AES
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP, PKCS1_v1_5
+from Crypto.Hash import SHA256
 from Crypto.Util.Padding import pad, unpad
 from Crypto.Random import get_random_bytes
 
@@ -388,3 +392,97 @@ class DatabaseEncryptor:
             username.encode('utf-8'),
             hashlib.sha256,
         ).hexdigest()
+
+
+# ==================== MITM 防护：消息层加密 ====================
+
+class MessageEncryptor:
+    """AES-256-GCM 消息加密器（与浏览器 Web Crypto API 兼容）
+
+    MITM 防护改进：
+    - 使用 RSA-OAEP 协商的随机 session key，无需用户输入密码或弱 KDF
+    - GCM 模式带认证标签，防止密文篡改（bit-flipping 攻击）
+    - 每次连接使用新的随机 session key，实现有限前向保密
+    - 格式: base64(nonce(12) + ciphertext + tag(16))，与 Web Crypto API 对齐
+    """
+
+    _NONCE_SIZE = 12
+    _TAG_SIZE = 16
+
+    def __init__(self, session_key: bytes):
+        if not isinstance(session_key, bytes) or len(session_key) != 32:
+            raise ValueError("session_key 必须为 32 字节（AES-256）")
+        self.key = session_key
+
+    def encrypt(self, plaintext: str) -> str:
+        """加密消息，返回 base64 字符串"""
+        if not isinstance(plaintext, str):
+            raise TypeError("plaintext 必须为 str")
+
+        nonce = get_random_bytes(self._NONCE_SIZE)
+        cipher = AES.new(self.key, AES.MODE_GCM, nonce=nonce)
+        ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode('utf-8'))
+        # 格式: nonce + ciphertext + tag（与 Web Crypto API 的 ciphertext||tag 对齐）
+        combined = nonce + ciphertext + tag
+        return base64.b64encode(combined).decode('utf-8')
+
+    def decrypt(self, ciphertext_b64: str) -> str:
+        """解密消息，失败抛出 ValueError"""
+        if not isinstance(ciphertext_b64, str) or not ciphertext_b64:
+            raise ValueError("解密失败: 输入为空")
+
+        try:
+            data = base64.b64decode(ciphertext_b64.encode('utf-8'))
+            if len(data) < self._NONCE_SIZE + self._TAG_SIZE:
+                raise ValueError("解密失败: 数据长度不合法")
+
+            nonce = data[:self._NONCE_SIZE]
+            tag = data[-self._TAG_SIZE:]
+            ciphertext = data[self._NONCE_SIZE:-self._TAG_SIZE]
+
+            cipher = AES.new(self.key, AES.MODE_GCM, nonce=nonce)
+            decrypted = cipher.decrypt_and_verify(ciphertext, tag)
+            return decrypted.decode('utf-8')
+        except ValueError:
+            raise
+        except Exception:
+            raise ValueError("解密失败")
+
+
+def decrypt_session_key(encrypted_key_b64: str, private_key_pem: bytes) -> bytes:
+    """使用 RSA-OAEP(SHA-256) 解密 session key
+
+    与浏览器 Web Crypto API 的 RSA-OAEP + SHA-256 兼容。
+    前端生成随机 256-bit AES key，用 RSA-OAEP 加密后传输，
+    后端用此函数解密获得 session key。
+
+    Returns:
+        32 字节的 AES-256 session key
+    """
+    if not isinstance(encrypted_key_b64, str) or not encrypted_key_b64:
+        raise ValueError("RSA 解密失败: 输入为空")
+
+    try:
+        private_key = RSA.import_key(private_key_pem)
+        encrypted_key = base64.b64decode(encrypted_key_b64.encode('utf-8'))
+        # 使用 SHA-256 与 Web Crypto API 对齐
+        cipher = PKCS1_OAEP.new(private_key, hashAlgo=SHA256)
+        session_key = cipher.decrypt(encrypted_key)
+    except Exception:
+        raise ValueError("RSA session key 解密失败")
+
+    if len(session_key) != 32:
+        raise ValueError("session key 长度不合法")
+
+    return session_key
+
+
+def get_public_key_fingerprint(public_key_pem: bytes) -> str:
+    """计算 RSA 公钥的 SHA-256 指纹（用于 MITM 检测的 TOFU 模型）
+
+    前端首次获取公钥时存储指纹，后续连接校验指纹是否一致。
+    若指纹变更，可能存在中间人替换公钥的攻击。
+    """
+    key = RSA.import_key(public_key_pem)
+    der_bytes = key.export_key(format='DER')
+    return hashlib.sha256(der_bytes).hexdigest()

@@ -1065,14 +1065,8 @@
           </div>
         </div>
         <div class="form-group">
-          <label>消息加密密码 <span style="color: red;">*</span></label>
-          <div class="password-input-wrapper">
-            <input id="login-encryption-key" type="password" placeholder="设置一个强密码" required />
-            <button type="button" class="password-toggle-btn" onclick="togglePasswordVisibility('login-encryption-key', this)">👁️</button>
-          </div>
-          <div class="form-hint">用于加密聊天消息，所有用户必须使用相同密码才能互相看到消息</div>
-          <div class="encryption-warning">
-            ⚠️ 安全提醒：请记住此密码！丢失后无法恢复已发送的消息。
+          <div class="encryption-info">
+            🔒 端到端加密已自动启用（AES-256-GCM + RSA-OAEP 密钥协商）
           </div>
         </div>
         <button onclick="login()" id="login-btn">登录</button>
@@ -1195,14 +1189,13 @@
     </div>
   </div>
 
-  <script src="/static/crypto-js.min.js"></script>
-  <script src="/static/jsencrypt.min.js"></script>
   <script>
     let ws = null;
     let currentUser = null;
     let authToken = null;
-    let encryptionKey = null;
-    let rsaPublicKey = null;
+    let sessionKey = null;        // CryptoKey (AES-256-GCM)，每次登录重新生成
+    let rsaPublicKey = null;      // RSA 公钥 PEM 字符串
+    let rsaCryptoKey = null;     // CryptoKey (RSA-OAEP)
     let reconnectAttempts = 0;
     const maxReconnectAttempts = 5;
     const reconnectDelay = 3000;
@@ -1211,29 +1204,121 @@
     let messages = {};
     let currentTheme = localStorage.getItem('theme') || 'light';
 
-    // 获取 RSA 公钥
+    // ==================== Web Crypto API 工具函数 ====================
+
+    // PEM 转 ArrayBuffer
+    function pemToArrayBuffer(pem) {
+      const b64 = pem.replace(/-----[A-Z ]+-----/g, '').replace(/\s/g, '');
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes.buffer;
+    }
+
+    // ArrayBuffer 转 base64
+    function bufferToBase64(buffer) {
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      return btoa(binary);
+    }
+
+    // base64 转 Uint8Array
+    function base64ToUint8Array(b64) {
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes;
+    }
+
+    // 导入 RSA 公钥为 CryptoKey
+    async function importRsaPublicKey(pem) {
+      const der = pemToArrayBuffer(pem);
+      return await crypto.subtle.importKey(
+        'spki', der,
+        { name: 'RSA-OAEP', hash: 'SHA-256' },
+        false, ['encrypt']
+      );
+    }
+
+    // 获取 RSA 公钥 + 公钥指纹 TOFU 校验
     async function getRSAPublicKey() {
       try {
         const response = await fetch('/api/public-key');
         const data = await response.json();
+        const fingerprint = data.public_key_fingerprint;
+
+        // TOFU: 首次存储指纹，后续校验一致性，检测 MITM 公钥替换
+        const stored = localStorage.getItem('rsa_key_fingerprint');
+        if (stored && stored !== fingerprint) {
+          throw new Error('RSA 公钥指纹变更，可能存在中间人攻击');
+        }
+        localStorage.setItem('rsa_key_fingerprint', fingerprint);
+
         rsaPublicKey = data.public_key;
-        return rsaPublicKey;
+        rsaCryptoKey = await importRsaPublicKey(data.public_key);
+        return data.public_key;
       } catch (error) {
         console.error('获取 RSA 公钥失败:', error);
         return null;
       }
     }
 
-    // RSA 加密
-    function rsaEncrypt(plaintext) {
-      if (!rsaPublicKey) {
+    // RSA-OAEP 加密（用于密码传输）
+    async function rsaEncrypt(plaintext) {
+      if (!rsaCryptoKey) {
         console.error('RSA 公钥未加载');
         return null;
       }
-      const encrypt = new JSEncrypt();
-      encrypt.setPublicKey(rsaPublicKey);
-      const encrypted = encrypt.encrypt(plaintext);
-      return encrypted;
+      const encoded = new TextEncoder().encode(plaintext);
+      const encrypted = await crypto.subtle.encrypt(
+        { name: 'RSA-OAEP' }, rsaCryptoKey, encoded
+      );
+      return bufferToBase64(encrypted);
+    }
+
+    // 生成随机 session key 并用 RSA-OAEP 加密（密钥封装）
+    async function generateAndEncryptSessionKey() {
+      // 生成随机 AES-256-GCM session key
+      sessionKey = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        true, ['encrypt', 'decrypt']
+      );
+      // 导出 raw key bytes，用 RSA-OAEP 加密后传输
+      const rawKey = await crypto.subtle.exportKey('raw', sessionKey);
+      const encryptedKey = await crypto.subtle.encrypt(
+        { name: 'RSA-OAEP' }, rsaCryptoKey, rawKey
+      );
+      return bufferToBase64(encryptedKey);
+    }
+
+    // AES-256-GCM 消息加密（与后端 MessageEncryptor 格式一致）
+    async function encryptMessage(message) {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const encoded = new TextEncoder().encode(message);
+      const ciphertextBuf = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: iv }, sessionKey, encoded
+      );
+      // 格式: iv(12) + ciphertext + tag(16)
+      const combined = new Uint8Array(iv.length + ciphertextBuf.byteLength);
+      combined.set(iv, 0);
+      combined.set(new Uint8Array(ciphertextBuf), iv.length);
+      return bufferToBase64(combined.buffer);
+    }
+
+    // AES-256-GCM 消息解密
+    async function decryptMessage(ciphertextB64) {
+      try {
+        const combined = base64ToUint8Array(ciphertextB64);
+        const iv = combined.slice(0, 12);
+        const ciphertextTag = combined.slice(12);
+        const decrypted = await crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: iv }, sessionKey, ciphertextTag
+        );
+        return new TextDecoder().decode(decrypted);
+      } catch (e) {
+        return '🔒 加密消息：密钥不匹配，无法解密';
+      }
     }
 
     // XSS防护函数
@@ -1256,7 +1341,7 @@
     ];
 
     // 初始化
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', async () => {
       // 设置主题
       if (currentTheme === 'dark') {
         document.documentElement.setAttribute('data-theme', 'dark');
@@ -1272,16 +1357,30 @@
       const savedUsername = sessionStorage.getItem('current_user');
       if (savedUsername) {
         const savedToken = sessionStorage.getItem(`token_${savedUsername}`);
-        const savedEncryptionKey = sessionStorage.getItem(`encryption_key_${savedUsername}`);
-        if (savedToken && savedEncryptionKey) {
+        const savedSessionKeyB64 = sessionStorage.getItem(`session_key_${savedUsername}`);
+        if (savedToken && savedSessionKeyB64) {
           currentUser = savedUsername;
           authToken = savedToken;
-          encryptionKey = savedEncryptionKey;
-          // 恢复聊天记录
-          restoreMessages();
-          connectWebSocket(savedToken);
+          try {
+            // 从 base64 恢复 session key
+            const rawKey = base64ToUint8Array(savedSessionKeyB64);
+            sessionKey = await crypto.subtle.importKey(
+              'raw', rawKey, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']
+            );
+            // 获取 RSA 公钥
+            await getRSAPublicKey();
+            // 用 RSA-OAEP 加密已有的 raw session key（不重新生成）
+            const encryptedKey = await crypto.subtle.encrypt(
+              { name: 'RSA-OAEP' }, rsaCryptoKey, rawKey
+            );
+            const encryptedSessionKey = bufferToBase64(encryptedKey);
+            restoreMessages();
+            connectWebSocket(savedToken, encryptedSessionKey);
+          } catch (e) {
+            console.error('恢复会话失败:', e);
+            sessionStorage.removeItem('current_user');
+          }
         } else {
-          // 如果没有保存的加密密钥，清除登录状态
           sessionStorage.removeItem('current_user');
         }
       }
@@ -1411,83 +1510,7 @@
       text.style.color = strengthColor;
     }
 
-    // AES-256-CBC 加密（使用 CryptoJS）
-    function encrypt(message, key) {
-      try {
-        // 生成密钥：SHA256(password) -> hex 字符串
-        const keyHash = CryptoJS.SHA256(key).toString(CryptoJS.enc.Hex);
-        console.log('加密密钥 (hex):', keyHash);
-
-        // 生成随机 IV (16 bytes)
-        const iv = CryptoJS.lib.WordArray.random(16);
-        console.log('IV (hex):', iv.toString(CryptoJS.enc.Hex));
-
-        // 使用 CBC 模式加密
-        const encrypted = CryptoJS.AES.encrypt(message, CryptoJS.enc.Hex.parse(keyHash), {
-          iv: iv,
-          mode: CryptoJS.mode.CBC,
-          padding: CryptoJS.pad.Pkcs7
-        });
-        console.log('加密后 ciphertext (hex):', encrypted.ciphertext.toString(CryptoJS.enc.Hex));
-
-        // 组合: IV(16) + ciphertext
-        const combined = iv.clone().concat(encrypted.ciphertext);
-        console.log('组合后 (hex):', combined.toString(CryptoJS.enc.Hex));
-
-        const result = CryptoJS.enc.Base64.stringify(combined);
-        console.log('最终结果 (base64):', result);
-
-        return result;
-      } catch (e) {
-        console.error("加密失败:", e);
-        return message;
-      }
-    }
-
-    // AES-256-CBC 解密（使用 CryptoJS）
-    function decrypt(ciphertext, key) {
-      try {
-        // 生成密钥：SHA256(password) -> hex 字符串
-        const keyHash = CryptoJS.SHA256(key).toString(CryptoJS.enc.Hex);
-        console.log('解密密钥 (hex):', keyHash);
-
-        // 解析 Base64
-        const combined = CryptoJS.enc.Base64.parse(ciphertext);
-        console.log('解析后 (hex):', combined.toString(CryptoJS.enc.Hex));
-
-        // 提取 IV (16 bytes = 4 words) 和 ciphertext
-        const iv = CryptoJS.lib.WordArray.create(combined.words.slice(0, 4));
-        const encrypted = CryptoJS.lib.WordArray.create(combined.words.slice(4));
-        console.log('IV (hex):', iv.toString(CryptoJS.enc.Hex));
-
-        // 使用 CBC 模式解密
-        const decrypted = CryptoJS.AES.decrypt(
-          { ciphertext: encrypted },
-          CryptoJS.enc.Hex.parse(keyHash),
-          {
-            iv: iv,
-            mode: CryptoJS.mode.CBC,
-            padding: CryptoJS.pad.Pkcs7
-          }
-        );
-        const result = decrypted.toString(CryptoJS.enc.Utf8);
-        console.log('解密结果:', result);
-
-        if (!result || result.length === 0 || result.trim().length === 0) {
-          return "加密消息：密码不同，无法解密消息";
-        }
-
-        const controlCharCount = (result.match(/[\x00-\x1F\x7F]/g) || []).length;
-        if (controlCharCount > result.length * 0.3) {
-          return "加密消息：密码不同，无法解密消息";
-        }
-
-        return result;
-      } catch (e) {
-        console.error("解密失败:", e);
-        return "加密消息：密码不同，无法解密消息";
-      }
-    }
+    // encryptMessage 和 decryptMessage 已在上方 Web Crypto API 部分定义
 
     // 显示登录表单
     function showLogin() {
@@ -1636,25 +1659,15 @@
     async function login() {
       const username = document.getElementById("login-username").value.trim();
       const password = document.getElementById("login-password").value;
-      const inputEncryptionKey = document.getElementById("login-encryption-key").value.trim();
 
       const errorDiv = document.getElementById("login-error");
       const loginBtn = document.getElementById("login-btn");
 
-      // 验证加密密码
-      if (!inputEncryptionKey) {
-        errorDiv.textContent = "请设置消息加密密码";
+      if (!username || !password) {
+        errorDiv.textContent = "请输入用户名和密码";
         errorDiv.classList.add("show");
         return;
       }
-
-      if (inputEncryptionKey.length < 8) {
-        errorDiv.textContent = "加密密码长度至少8位";
-        errorDiv.classList.add("show");
-        return;
-      }
-
-      encryptionKey = inputEncryptionKey;
 
       errorDiv.classList.remove("show");
       showLoading();
@@ -1662,16 +1675,22 @@
       loginBtn.textContent = "登录中...";
 
       try {
-        // 获取 RSA 公钥
+        // 获取 RSA 公钥（含 TOFU 指纹校验）
         const publicKey = await getRSAPublicKey();
         if (!publicKey) {
           throw new Error("无法获取加密密钥，请刷新页面重试");
         }
 
-        // 使用 RSA 加密密码
-        const encryptedPassword = rsaEncrypt(password);
+        // RSA-OAEP 加密密码
+        const encryptedPassword = await rsaEncrypt(password);
         if (!encryptedPassword) {
           throw new Error("密码加密失败，请刷新页面重试");
+        }
+
+        // 生成随机 session key 并用 RSA-OAEP 加密（密钥封装）
+        const encryptedSessionKey = await generateAndEncryptSessionKey();
+        if (!encryptedSessionKey) {
+          throw new Error("会话密钥生成失败，请刷新页面重试");
         }
 
         const response = await fetch("/token", {
@@ -1694,15 +1713,15 @@
         currentUser = data.username;
         authToken = data.access_token;
 
-        // 保存 access token 到 sessionStorage（每个标签页独立存储，支持多标签页同时登录不同账户）
+        // 保存到 sessionStorage
         sessionStorage.setItem(`token_${currentUser}`, data.access_token);
-        // 保存当前登录用户名
         sessionStorage.setItem('current_user', currentUser);
-        // 保存加密密钥（用于刷新后恢复）
-        sessionStorage.setItem(`encryption_key_${currentUser}`, encryptionKey);
+        // 保存 raw session key（base64）用于刷新后恢复
+        const rawKey = await crypto.subtle.exportKey('raw', sessionKey);
+        sessionStorage.setItem(`session_key_${currentUser}`, bufferToBase64(rawKey));
 
-        // 连接 WebSocket
-        connectWebSocket(data.access_token);
+        // 连接 WebSocket（发送加密的 session key）
+        connectWebSocket(data.access_token, encryptedSessionKey);
 
       } catch (error) {
         errorDiv.textContent = error.message;
@@ -1715,7 +1734,7 @@
     }
 
     // 连接 WebSocket
-    function connectWebSocket(token) {
+    function connectWebSocket(token, encryptedSessionKey) {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const host = window.location.hostname;
       const port = window.location.port ? `:${window.location.port}` : "";
@@ -1725,17 +1744,17 @@
         reconnectAttempts = 0;
         showNetworkStatus('online');
 
-        // 发送认证信息
+        // 发送认证信息（token + RSA-OAEP 加密的 session key）
         await ws.send(JSON.stringify({
           token: token,
-          encryption_key: encryptionKey
+          encrypted_session_key: encryptedSessionKey
         }));
 
         // 启动心跳
         startHeartbeat();
       };
 
-      ws.onmessage = (e) => {
+      ws.onmessage = async (e) => {
         const d = JSON.parse(e.data);
         const chatDiv = document.getElementById("chat");
 
@@ -1751,12 +1770,8 @@
             document.getElementById("admin-btn").style.display = "block";
           }
 
-          // 隐藏加载遮罩
           hideLoading();
-
-          // 确保滚动到底部（特别是刷新后恢复聊天记录时）
           setTimeout(() => scrollToBottom(), 100);
-
           return;
         }
 
@@ -1765,7 +1780,6 @@
           document.getElementById("status").classList.remove("connected");
           document.getElementById("status").textContent = "✗ " + d.message;
 
-          // 如果是 token 无效错误，清除登录状态
           if (d.message.includes("Invalid token") || d.message.includes("用户不存在")) {
             forceLogout();
           }
@@ -1782,7 +1796,6 @@
         }
 
         if (d.type === "recall") {
-          // 处理消息撤回
           const msgEl = document.querySelector(`[data-message-id="${d.message_id}"]`);
           if (msgEl) {
             msgEl.classList.add('msg-recall');
@@ -1791,7 +1804,7 @@
           return;
         }
 
-        // 处理消息
+        // 处理消息（AES-256-GCM 异步解密）
         const msgDiv = document.createElement("div");
         msgDiv.className = "msg";
         const sender = d.sender || "系统";
@@ -1809,17 +1822,16 @@
 
         if (d.type === "system") {
           msgDiv.className += " system";
-          const decryptedMsg = decrypt(d.message, encryptionKey);
+          const decryptedMsg = await decryptMessage(d.message);
           msgDiv.innerHTML = `<div class="msg-time">${new Date(d.time*1000).toLocaleTimeString()}</div>${escapeHTML(decryptedMsg)}`;
         } else if (d.type === "message" || d.type === "announcement") {
-          // 公告消息特殊处理
           if (d.type === "announcement") {
             msgDiv.className += " announcement";
           } else {
             msgDiv.className += isMine ? " mine" : " other";
           }
 
-          const decryptedMsg = decrypt(d.message, encryptionKey);
+          const decryptedMsg = await decryptMessage(d.message);
 
           let recallBtn = '';
           if (isMine && d.type === "message") {
@@ -1916,12 +1928,12 @@
     }
 
     // 恢复聊天记录
-    function restoreMessages() {
+    async function restoreMessages() {
       const chatHistory = getChatHistory();
       if (chatHistory.length === 0) return; // 没有历史消息就不恢复
 
       const chatDiv = document.getElementById("chat");
-      chatHistory.forEach(d => {
+      for (const d of chatHistory) {
         const msgDiv = document.createElement("div");
         msgDiv.className = "msg";
         const sender = d.sender || "系统";
@@ -1939,17 +1951,16 @@
 
         if (d.type === "system") {
           msgDiv.className += " system";
-          const decryptedMsg = decrypt(d.message, encryptionKey);
+          const decryptedMsg = await decryptMessage(d.message);
           msgDiv.innerHTML = `<div class="msg-time">${new Date(d.time*1000).toLocaleTimeString()}</div>${escapeHTML(decryptedMsg)}`;
         } else if (d.type === "message" || d.type === "announcement") {
-          // 公告消息特殊处理
           if (d.type === "announcement") {
             msgDiv.className += " announcement";
           } else {
             msgDiv.className += isMine ? " mine" : " other";
           }
 
-          const decryptedMsg = decrypt(d.message, encryptionKey);
+          const decryptedMsg = await decryptMessage(d.message);
 
           let recallBtn = '';
           if (isMine && d.type === "message") {
@@ -1982,10 +1993,20 @@
 
 
     // 重连 WebSocket
-    function reconnectWebSocket() {
+    async function reconnectWebSocket() {
       if (currentUser && authToken && (!ws || ws.readyState === WebSocket.CLOSED)) {
         console.log("重连中...");
-        connectWebSocket(authToken);
+        try {
+          // 重新用 RSA-OAEP 加密 session key
+          const rawKey = await crypto.subtle.exportKey('raw', sessionKey);
+          const encryptedKey = await crypto.subtle.encrypt(
+            { name: 'RSA-OAEP' }, rsaCryptoKey, rawKey
+          );
+          const encryptedSessionKey = bufferToBase64(encryptedKey);
+          connectWebSocket(authToken, encryptedSessionKey);
+        } catch (e) {
+          console.error("重连失败:", e);
+        }
       }
     }
 
@@ -2010,15 +2031,15 @@
     }
 
     // 发送消息
-    function send() {
+    async function send() {
       const input = document.getElementById("message-input");
       const message = input.value.trim();
 
       if (message && ws && ws.readyState === WebSocket.OPEN) {
-        const encryptedMsg = encrypt(message, encryptionKey);
+        const encryptedMsg = await encryptMessage(message);
         ws.send(JSON.stringify({ message: encryptedMsg, type: "message" }));
         input.value = "";
-        
+
         // 移动端保持输入框焦点，防止键盘收起
         setTimeout(() => {
           input.focus();

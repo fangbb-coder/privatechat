@@ -95,7 +95,7 @@ WS_CONNECTIONS_PER_MINUTE=20
 MESSAGE_RECALL_MINUTES=2
 MAX_MESSAGE_LENGTH=5000
 MAX_STORED_MESSAGES=1000
-DEFAULT_ENCRYPTION_KEY=PrivateChat2025Secure!
+# 注意：DEFAULT_ENCRYPTION_KEY 已移除，消息加密改用 RSA-OAEP + AES-256-GCM
 
 RSA_KEY_SIZE=2048
 
@@ -103,6 +103,9 @@ RSA_KEY_SIZE=2048
 ALLOWED_ORIGINS=$([[ $dev_mode -eq 1 ]] && echo "http://localhost:8080,http://127.0.0.1:8080" || echo "请填写你的域名，例如 https://chat.example.com")
 ALLOWED_HOSTS=$([[ $dev_mode -eq 1 ]] && echo "localhost,127.0.0.1" || echo "请填写你的域名，例如 chat.example.com")
 WS_ALLOWED_ORIGINS=$([[ $dev_mode -eq 1 ]] && echo "http://localhost:8080,http://127.0.0.1:8080" || echo "请填写你的域名，例如 https://chat.example.com")
+
+# TLS 强制（MITM 防护）：生产必须开启，开发可关闭
+FORCE_TLS=$([[ $dev_mode -eq 1 ]] && echo "false" || echo "true")
 
 LOG_LEVEL=INFO
 EOF
