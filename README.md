@@ -24,7 +24,7 @@
 - ✅ **密钥分离**：JWT 签名密钥 `SECRET_KEY` 与数据库字段加密密钥 `DB_ENCRYPTION_KEY` 独立
 - ✅ **强 KDF**：数据库字段加密改用 PBKDF2-SHA256（20 万次迭代 + 固定盐）替代裸 SHA-256
 - ✅ **TrustedHost 校验**：生产环境 `ALLOWED_HOSTS` 禁止 `["*"]`，配置为空或非法直接拒绝启动
-- ✅ **CSP 加固**：移除 `unsafe-inline` / `unsafe-eval`，脚本走 `script-src 'self'`
+- ✅ **CSP 加固**：脚本走 `script-src 'self'`；如未将内联脚本迁出，需补 `'unsafe-inline' 'unsafe-hashes'` 兼容 `onclick` 内联事件（v3.6.1 部署笔记中加了这两项；如将 inline `<script>` 与 `onclick` 迁出到 `app.js` 等外部脚本，可恢复严格策略）
 - ✅ **异常脱敏**：全局异常处理器返回 `error_id`，不再把堆栈细节回传客户端
 - ✅ **RSA 解密加固**：统一错误路径 + 随机 sentinel，降低填充预言可区分性
 - ✅ **删除用户二次确认**：删除账户要求管理员密码校验（与踢出/禁用一致）
@@ -105,6 +105,11 @@
 cp docker/.env.docker.example .env
 # 编辑 .env 填写 SECRET_KEY / DB_ENCRYPTION_KEY / ALLOWED_* / ADMIN_PASSWORD
 docker compose up -d --build
+# 仓库 v3.6.1 起附带 docker/docker-compose.yml（之前缺失）；
+# 9090 端口映射到容器 8080，含 data/logs/keys 三个命名卷与健康检查。
+
+# 查看首屏默认管理员密码（首次启动时输出一次到日志）
+docker logs privatechat | grep "默认管理员账户"
 ```
 
 ### 方式二：裸源（仅开发调试）
@@ -134,6 +139,7 @@ ENVIRONMENT=development python3 main.py
 | [`docs/DEPLOYMENT_OPERATION_MANUAL.md`](docs/DEPLOYMENT_OPERATION_MANUAL.md) | **部署操作手册 v1.0**（环境准备、部署、运维、监控、备份、升级、故障排查全套） |
 | [`docker/DEPLOY.md`](docker/DEPLOY.md) | Docker 快速部署简明指南 |
 | [`REPOSITORY_ANALYSIS_REPORT.md`](REPOSITORY_ANALYSIS_REPORT.md) | 仓库问题审计报告（问题分级 + 修复建议） |
+| [`docker/docker-compose.yml`](docker/docker-compose.yml) | 生产 compose 模板（端口映射 + 命名卷 + 健康检查） |
 | [`docker/.env.docker.example`](docker/.env.docker.example) | 生产部署 `.env` 模板（35 项） |
 | [`backend/.env.example`](backend/.env.example) | 裸源部署 `.env` 模板 |
 
@@ -196,6 +202,92 @@ ENVIRONMENT=development python3 main.py
 └── README.md                   # 本文档
 ```
 
+---
+
+## 🇨🇳 中国大陆部署提示
+
+国内网络环境直接按上述步骤会卡在几处公共 CDN / 镜像 / 域名上，按下面小改可一次跑通。
+
+### 4.1 代码 clone
+
+GitHub HTTPS 经常被 GFW 掐或极慢，用代理镜像：
+
+```bash
+git clone --depth 1 https://gh-proxy.com/https://github.com/fangbb-coder/privatechat.git
+# 备选：https://mirror.ghproxy.com/  https://ghproxy.net/
+```
+
+### 4.2 Docker 镜像源
+
+`registry-1.docker.io` 在 ECS 出站经常连不上。给 `/etc/docker/daemon.json` 配国内 mirror：
+
+```json
+{
+  "registry-mirrors": ["https://docker.m.daocloud.io"]
+}
+# 备选（任选一个能 ping 通的）：https://docker.mirrors.ustc.edu.cn  https://hub-mirror.c.163.com
+# 重启：systemctl restart docker
+# 验证：docker info | grep "Registry Mirrors"
+```
+
+> 经验：阿里云 `docker.mirrors.aliyun.com` 与腾讯云 `mirror.ccs.tencent-cloud.com` 的 host 在 ECS 内 DNS 解析不到（NXDOMAIN），daocloud 是验证可用的一个。
+
+### 4.3 apt 源（Dockerfile 内 `apt-get install`）
+
+`deb.debian.org` 在国内 build 慢（拉 21MB gcc 经常卡十几分钟）。在 `docker/Dockerfile` 改阿里云源：
+
+```dockerfile
+RUN set -eux;     if [ -f /etc/apt/sources.list.d/debian.sources ]; then         sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources;     fi;     if [ -f /etc/apt/sources.list ]; then         sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list;     fi
+```
+
+### 4.4 pip 跨阶段传递
+
+原 `Dockerfile` 用 `pip install --user` 装到 `~/.local`，runtime stage 不会自动进 `sys.path`（`No module named uvicorn`），必须改 `--target`：
+
+```dockerfile
+# builder 阶段
+RUN pip install --no-cache-dir --target=/install -r requirements.txt
+
+# runtime 阶段
+COPY --from=builder --chown=app:app /install /home/app/.local
+ENV PYTHONPATH=/home/app/.local:/app:/app/backend
+```
+
+### 4.5 前端 JS 国内加载
+
+`frontend/index.html` 默认引用 `cdnjs.cloudflare.com/.../crypto-js.min.js` 与 `jsencrypt.min.js`，国内用户 CDN 经常被墙，会导致登录按钮**点了无反应**（fetch 根本没发出去）。把 JS 下载到 `frontend/` 用项目自带的 `/static/` 路由 serve：
+
+```bash
+curl -o frontend/crypto-js.min.js https://cdn.jsdelivr.net/npm/crypto-js@4.1.1/crypto-js.min.js
+curl -o frontend/jsencrypt.min.js https://cdn.jsdelivr.net/npm/jsencrypt@3.3.2/bin/jsencrypt.min.js
+sed -i 's|https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js|/static/crypto-js.min.js|' frontend/index.html
+sed -i 's|https://cdnjs.cloudflare.com/ajax/libs/jsencrypt/3.3.2/jsencrypt.min.js|/static/jsencrypt.min.js|' frontend/index.html
+docker compose build   # 重新 build 让 JS 进 image
+```
+
+### 4.6 浏览器双 CSP 冲突
+
+后端 `SecurityHeadersMiddleware` 发的 `script-src 'self'` 与 `frontend/index.html` `<meta CSP>` 的 `script-src 'self' 'unsafe-inline'` union 后取最严，内联 `<script>` 与 `onclick` 全被拒，**登录按钮看似无反应**。如未迁移内联脚本到外部文件，需在 `backend/main.py` 同步加：
+
+```python
+"script-src 'self' 'unsafe-inline' 'unsafe-hashes'; "
+```
+
+### 4.7 公网无域名 / 无证书
+
+`.env` 里 `ALLOWED_ORIGINS` / `ALLOWED_HOSTS` / `WS_ALLOWED_ORIGINS` 可直接填 IP + 端口（如 `http://39.107.111.43:9090`），但强烈建议尽快上 Nginx + Let's Encrypt 终结 HTTPS（明文 HTTP 跑聊天等于明文密码）。临时方案：先 HTTP 跑，但一定改 `admin` 默认密码。
+
+### 4.8 GitHub 推送走代理
+
+ECS 上 `git push github.com` 超时，可临时走代理镜像（token 仍放 URL user 部分）：
+
+```bash
+git remote set-url origin "https://x-access-token:<TOKEN>@gh-proxy.com/https://github.com/<user>/<repo>.git"
+git push origin main
+# 完事立刻把 remote URL 改回 https://github.com/<user>/<repo>.git 防止 token 留在 .git/config
+```
+
+---
 ---
 
 ## 🧪 测试
