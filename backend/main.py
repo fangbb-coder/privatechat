@@ -156,7 +156,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # 前端脚本全部走 'self'（外部 app.js）；ws/wss 用于实时聊天
         csp = (
             "default-src 'self'; "
-            "script-src 'self'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-hashes'; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob:; "
             "font-src 'self' data:; "
