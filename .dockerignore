@@ -1,0 +1,35 @@
+# M4: .dockerignore - 避免拷入敏感/无关文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 环境与密钥（绝不进镜像）
+.env
+.env.*
+data/.secret_key
+backend/keys/*.pem
+
+# 数据库与日志
+data/*.db
+data/*.db-journal
+logs/
+
+# Git 与文档
+.git/
+.gitignore
+*.md
+docs/
+
+# 测试与 CI
+tests/
+.pytest_cache/
+.github/
+
+# IDE
+.vscode/
+.idea/
+
+# 系统文件
+.DS_Store
+Thumbs.db

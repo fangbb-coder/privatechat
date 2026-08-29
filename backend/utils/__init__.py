@@ -1,6 +1,8 @@
 """
 工具模块初始化
 """
+from .config import settings
+from .logger import setup_logger, get_logger
 from .encryption import (
     AESEncryptor,
     RSAKeyManager,
@@ -20,6 +22,9 @@ from .log_masking import (
 )
 
 __all__ = [
+    'settings',
+    'setup_logger',
+    'get_logger',
     'AESEncryptor',
     'RSAKeyManager',
     'PasswordHasher',

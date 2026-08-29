@@ -41,6 +41,9 @@ Thumbs.db
 
 # Environment variables
 backend/.env
+.env
+.env.*
+!docker/.env.docker.example
 data/.secret_key
 
 # Temporary files
