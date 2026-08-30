@@ -853,6 +853,10 @@ class UserDB:
 # 初始化用户数据库（持久化存储）
 user_db = UserDB()
 
+# 初始化端到端加密存储层（零知识：服务端不持有任何客户端私钥，无法解密消息）
+from e2e_db import E2EDatabase
+e2e_db = E2EDatabase(encryptor=user_db.encryptor)
+
 # ==================== WebSocket 客户端管理 ====================
 clients: List[dict] = []  # 存储客户端信息
 # ⚠️ 重要：聊天消息不持久化存储在服务器，仅实时广播给在线用户
@@ -1555,6 +1559,99 @@ async def send_announcement(
     return {"message": "系统公告已发送"}
 
 
+# ==================== 端到端加密（E2E）接口 ====================
+# 服务端零知识：仅存储密文与 per-recipient 加密密钥，不持有任何客户端私钥，
+# 因此无法解密 enc_key，也无法解密消息正文。客户端私钥永不上传。
+
+@app.post("/api/e2e/keys/upload")
+@limiter.limit("10/minute")
+async def e2e_upload_keys(request: Request, current_user: dict = Depends(get_current_user)):
+    """上传身份公钥 + 一批一次性预密钥（OPK）。
+    客户端首次注册/登录后调用。私钥永不上传。"""
+    body = await request.json()
+    identity_pubkey = body.get("identity_pubkey")
+    fingerprint = body.get("fingerprint")
+    prekeys = body.get("prekeys", [])  # [{id, pubkey}]
+    if not identity_pubkey or not fingerprint:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="缺少 identity_pubkey 或 fingerprint",
+        )
+    e2e_db.upsert_keys(current_user["username"], identity_pubkey, fingerprint, prekeys)
+    return {
+        "message": "公钥已上传",
+        "prekey_count": e2e_db.get_prekey_count(current_user["username"]),
+    }
+
+
+@app.get("/api/e2e/keys")
+@limiter.limit("60/minute")
+async def e2e_get_keys(request: Request, current_user: dict = Depends(get_current_user)):
+    """获取公钥目录（所有已上传公钥的用户，含指纹用于 TOFU 校验）"""
+    return {"keys": e2e_db.get_all_keys()}
+
+
+@app.get("/api/e2e/members")
+@limiter.limit("60/minute")
+async def e2e_get_members(request: Request, current_user: dict = Depends(get_current_user)):
+    """获取已支持 E2E 的成员列表（发消息时作为接收方）"""
+    members = [m for m in e2e_db.get_member_list() if m != current_user["username"]]
+    return {"members": members}
+
+
+@app.get("/api/e2e/prekey/{username}")
+@limiter.limit("30/minute")
+async def e2e_consume_prekey(request: Request, username: str,
+                             current_user: dict = Depends(get_current_user)):
+    """消耗目标用户的一个未用预密钥（用于 X3DH 离线首次握手）。
+    用一次即作废，提供前向保密。"""
+    pk = e2e_db.consume_prekey(username)
+    if not pk:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="该用户暂无可用预密钥（请对方上线补充）",
+        )
+    return pk
+
+
+@app.post("/api/e2e/prekeys")
+@limiter.limit("10/minute")
+async def e2e_add_prekeys(request: Request, current_user: dict = Depends(get_current_user)):
+    """补充一次性预密钥池"""
+    body = await request.json()
+    prekeys = body.get("prekeys", [])
+    e2e_db.add_prekeys(current_user["username"], prekeys)
+    return {
+        "message": "预密钥已补充",
+        "prekey_count": e2e_db.get_prekey_count(current_user["username"]),
+    }
+
+
+@app.get("/api/e2e/prekey-count")
+@limiter.limit("60/minute")
+async def e2e_prekey_count(request: Request, current_user: dict = Depends(get_current_user)):
+    """查询自己剩余未用一次性预密钥数量（客户端据此补充，保证离线首次握手可用）"""
+    return {"count": e2e_db.get_prekey_count(current_user["username"])}
+
+
+@app.get("/api/e2e/messages")
+@limiter.limit("60/minute")
+async def e2e_get_messages(request: Request, current_user: dict = Depends(get_current_user)):
+    """拉取发给自己的未读 E2E 消息（离线消息补偿）。
+    客户端不存消息，每次按需拉取密文，本地解密后渲染（不持久化）。"""
+    msgs = e2e_db.get_user_messages(current_user["username"], unread_only=True)
+    return {"messages": msgs}
+
+
+@app.post("/api/e2e/messages/{message_id}/read")
+@limiter.limit("120/minute")
+async def e2e_mark_read(request: Request, message_id: str,
+                        current_user: dict = Depends(get_current_user)):
+    """标记某条消息为已读"""
+    e2e_db.mark_read(current_user["username"], message_id)
+    return {"message": "已标记已读"}
+
+
 # ==================== WebSocket 聊天端点 ====================
 @app.websocket("/ws")
 async def chat(ws: WebSocket):
@@ -1723,6 +1820,48 @@ async def chat(ws: WebSocket):
                             pass
 
                     logger.info(f"消息撤回: {message_id} by {username}")
+                continue
+
+            # E2E 消息（服务端零知识：只存储密文 + per-recipient enc_key，转发给在线客户端）
+            if data.get("type") == "e2e_message":
+                ciphertext = data.get("ciphertext")
+                recipients = data.get("recipients", [])  # [{username, enc_key, ratchet_header}]
+                if not ciphertext or not recipients:
+                    await ws.send_json({
+                        "type": "error",
+                        "message": "E2E 消息格式错误（缺少 ciphertext 或 recipients）"
+                    })
+                    continue
+                message_id = f"e2e_{username}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+                room = data.get("room", "public")
+                # 服务端只存密文 + 每接收方的 enc_key（无法解密）
+                e2e_db.store_message(message_id, username, ciphertext, room, recipients)
+                stats["total_messages_sent"] += 1
+                # 实时推送给在线接收方；离线接收方上线后通过 GET /api/e2e/messages 拉取
+                recipient_map = {r["username"]: r for r in recipients}
+                sent_online = 0
+                for client in clients:
+                    rcpt = recipient_map.get(client["username"])
+                    if not rcpt:
+                        continue
+                    try:
+                        await client["ws"].send_json({
+                            "type": "e2e_message",
+                            "message_id": message_id,
+                            "sender": username,
+                            "ciphertext": ciphertext,
+                            "enc_key": rcpt["enc_key"],
+                            "ratchet_header": rcpt["ratchet_header"],
+                            "time": int(time.time())
+                        })
+                        # 在线推送成功即标记已读，避免上线后离线拉取重复投递导致 ratchet 失步
+                        e2e_db.mark_read(client["username"], message_id)
+                        sent_online += 1
+                    except Exception as e:
+                        logger.debug(f"E2E 实时推送失败: {type(e).__name__}")
+                logger.info(
+                    f"E2E 消息: {username} -> {len(recipients)} 接收方（在线 {sent_online}）"
+                )
                 continue
 
             # 处理聊天消息
