@@ -1,0 +1,15 @@
+# M9: 依赖版本约束
+# - 移除未维护的 passlib（代码实际只用 bcrypt）
+# - 代码使用 python-jose（from jose import jwt），而非 PyJWT，保持一致
+# - 使用下限约束保证安全修复版本，同时兼容不同 Python 环境
+#   （精确锁定在 CI 中通过 pip-compile 生成 requirements.lock 实现）
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+pycryptodome>=3.21.0
+bcrypt>=4.2.0
+python-jose[cryptography]>=3.3.0
+python-multipart>=0.0.20
+loguru>=0.7.3
+slowapi>=0.1.10

@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment variables
+backend/.env
+.env
+.env.*
+!docker/.env.docker.example
+data/.secret_key
+
+# Temporary files
+*.tmp
+*.temp
+
+# Deployment scripts (only use deploy.sh or deploy.ps1)
+setup_*.sh
+test_*.sh
+update_*.sh
+*.template

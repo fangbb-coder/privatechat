@@ -1,0 +1,104 @@
+# Private Chat - Docker Compose 一键部署
+#
+# 使用方式：
+#   1. 复制 .env.docker.example 为 .env，填入生产配置（密钥、域名等）
+#   2. docker compose up -d
+#
+# 安全要求（生产环境）：
+#   - SECRET_KEY / DB_ENCRYPTION_KEY 必须显式设置（长度 >= 32）
+#   - ALLOWED_ORIGINS / ALLOWED_HOSTS 必须配置具体域名，禁止 ["*"]
+#   - ADMIN_PASSWORD 建议显式设置，否则首次启动会随机生成并打印在日志中
+services:
+  private-chat:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: private-chat:3.6.1
+    container_name: private-chat
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    environment:
+      # 应用
+      APP_NAME: ${APP_NAME:-Private Chat}
+      APP_VERSION: ${APP_VERSION:-3.6.1}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      HOST: 0.0.0.0
+      PORT: 8080
+
+      # 密钥（H2: JWT 与 DB 加密分离）❗生产必须设置
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY 必须设置，请参考 .env.docker.example}
+      DB_ENCRYPTION_KEY: ${DB_ENCRYPTION_KEY:?DB_ENCRYPTION_KEY 必须设置，请参考 .env.docker.example}
+
+      # 默认管理员（C3: 不再硬编码）
+      ADMIN_USERNAMES: ${ADMIN_USERNAMES:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+
+      # Token
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      MAX_ACTIVE_SESSIONS: ${MAX_ACTIVE_SESSIONS:-5}
+
+      # 密码策略
+      MIN_PASSWORD_LENGTH: ${MIN_PASSWORD_LENGTH:-8}
+      MAX_PASSWORD_LENGTH: ${MAX_PASSWORD_LENGTH:-64}
+      PASSWORD_REQUIRE_UPPERCASE: ${PASSWORD_REQUIRE_UPPERCASE:-true}
+      PASSWORD_REQUIRE_LOWERCASE: ${PASSWORD_REQUIRE_LOWERCASE:-true}
+      PASSWORD_REQUIRE_DIGITS: ${PASSWORD_REQUIRE_DIGITS:-true}
+      PASSWORD_REQUIRE_SPECIAL: ${PASSWORD_REQUIRE_SPECIAL:-true}
+      PASSWORD_HISTORY_COUNT: ${PASSWORD_HISTORY_COUNT:-5}
+
+      # 登录安全
+      MAX_LOGIN_ATTEMPTS: ${MAX_LOGIN_ATTEMPTS:-5}
+      LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
+      IP_LOCK_THRESHOLD: ${IP_LOCK_THRESHOLD:-20}
+      IP_LOCK_MINUTES: ${IP_LOCK_MINUTES:-30}
+
+      # 速率限制
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
+      RATE_LIMIT_MAX_IPS: ${RATE_LIMIT_MAX_IPS:-10000}
+      WS_CONNECTIONS_PER_MINUTE: ${WS_CONNECTIONS_PER_MINUTE:-20}
+
+      # 消息
+      MESSAGE_RECALL_MINUTES: ${MESSAGE_RECALL_MINUTES:-2}
+      MAX_MESSAGE_LENGTH: ${MAX_MESSAGE_LENGTH:-5000}
+      MAX_STORED_MESSAGES: ${MAX_STORED_MESSAGES:-1000}
+      # 注意：DEFAULT_ENCRYPTION_KEY 已移除，消息加密改用 RSA-OAEP + AES-256-GCM
+
+      # RSA
+      RSA_KEY_SIZE: ${RSA_KEY_SIZE:-2048}
+
+      # CORS / Host（H3: 生产禁止 ["*"]）❗生产必须配置
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS 必须配置具体域名}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?ALLOWED_HOSTS 必须配置具体域名}
+      WS_ALLOWED_ORIGINS: ${WS_ALLOWED_ORIGINS:-*}
+
+      # TLS 强制（MITM 防护）
+      FORCE_TLS: ${FORCE_TLS:-true}
+
+      # 日志
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      # 数据库持久化（用户、token、密码历史）
+      - chat-data:/app/data
+      # 日志持久化
+      - chat-logs:/app/logs
+      # RSA 密钥持久化（更换密钥会导致旧消息无法解密）
+      - chat-keys:/app/backend/keys
+    healthcheck:
+      # 带 Host 头匹配 ALLOWED_HOSTS（TrustedHostMiddleware 在生产环境会校验 Host）
+      test: ["CMD", "python", "-c", "import urllib.request,sys; req=urllib.request.Request('http://127.0.0.1:8080/health', headers={'Host':'localhost'}); sys.exit(0 if urllib.request.urlopen(req, timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  chat-data:
+  chat-logs:
+  chat-keys:

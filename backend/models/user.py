@@ -1,0 +1,119 @@
+"""
+用户数据模型
+"""
+from pydantic import BaseModel, Field, validator
+from typing import Optional
+import re
+
+
+class UserRegister(BaseModel):
+    """用户注册数据模型"""
+    username: str = Field(..., min_length=3, max_length=20, description="用户名")
+    password: str = Field(..., min_length=8, max_length=64, description="密码")
+
+    @validator('username')
+    def username_must_be_valid(cls, v):
+        if not re.match(r"^[a-zA-Z0-9_]+$", v):
+            raise ValueError("用户名只能包含字母、数字和下划线")
+        return v
+
+
+class UserLogin(BaseModel):
+    """用户登录数据模型"""
+    username: str = Field(..., min_length=1, max_length=20, description="用户名")
+    password: str = Field(..., min_length=1, max_length=64, description="密码")
+
+    @validator('username')
+    def username_must_not_be_empty(cls, v):
+        if not v or v.strip() == "":
+            raise ValueError("用户名不能为空")
+        if not re.match(r"^[a-zA-Z0-9_]+$", v):
+            raise ValueError("用户名只能包含字母、数字和下划线")
+        return v
+
+    @validator('password')
+    def password_must_not_be_empty(cls, v):
+        if not v or v.strip() == "":
+            raise ValueError("密码不能为空")
+        return v
+
+
+class UserChangePassword(BaseModel):
+    """修改密码数据模型"""
+    old_password: str = Field(..., min_length=1, max_length=64, description="旧密码")
+    new_password: str = Field(..., min_length=8, max_length=64, description="新密码")
+
+    @validator('old_password')
+    def old_password_must_not_be_empty(cls, v):
+        if not v or v.strip() == "":
+            raise ValueError("旧密码不能为空")
+        return v
+
+
+class UserInfo(BaseModel):
+    """用户信息模型"""
+    username: str
+    is_admin: bool
+    created_at: Optional[str] = None
+
+
+class TokenResponse(BaseModel):
+    """Token 响应模型"""
+    access_token: str
+    refresh_token: Optional[str] = None
+    token_type: str = "bearer"
+    username: str
+
+
+class RefreshTokenRequest(BaseModel):
+    """刷新 Token 请求模型"""
+    refresh_token: str
+
+
+class Message(BaseModel):
+    """消息模型"""
+    id: str
+    sender: str
+    content: str
+    time: int
+    type: str  # message, system, recall
+    is_read: bool = False
+    is_sender: bool = False
+
+
+class MessageRecall(BaseModel):
+    """消息撤回模型"""
+    message_id: str
+
+
+class AdminDeleteUserRequest(BaseModel):
+    """管理员删除用户请求（H7: 二次确认）
+
+    要求管理员输入自身密码以确认删除操作。
+    """
+    admin_password: str = Field(..., min_length=1, max_length=64, description="管理员密码（二次确认）")
+
+
+class AdminActionConfirm(BaseModel):
+    """管理员敏感操作二次确认基类"""
+    admin_password: str = Field(..., min_length=1, max_length=64, description="管理员密码（二次确认）")
+
+
+class OnlineUser(BaseModel):
+    """在线用户模型"""
+    username: str
+    status: str  # online, busy
+    connected_at: int
+
+
+class SystemAnnouncement(BaseModel):
+    """系统公告模型"""
+    message: str = Field(..., min_length=1, max_length=1000, description="公告内容")
+    type: str = "announcement"
+
+
+class StatsResponse(BaseModel):
+    """统计信息响应"""
+    online_users: int
+    total_messages_sent: int
+    total_users: int
