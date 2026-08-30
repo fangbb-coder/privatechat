@@ -62,3 +62,9 @@ setup_*.sh
 test_*.sh
 update_*.sh
 *.template
+
+# Deployment keys / secrets (never commit private keys)
+.deploy_key
+*.deploy_key
+*.pem
+*.key
