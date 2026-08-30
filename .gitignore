@@ -68,3 +68,9 @@ update_*.sh
 *.deploy_key
 *.pem
 *.key
+# TLS / SSL certificates (never commit public certs or chains with sensitive CNs)
+*.crt
+*.cer
+*.p7b
+*.p12
+*.pfx
