@@ -7,6 +7,12 @@
  *   - 信封加密：随机消息密钥 K 加密正文，每个接收方用各自链派生的 mk 加密 K
  *   - 群组前向保密：每个 sender→recipient 一条独立链（多接收方各一份 enc_key）
  *
+ * 私钥隔离（v2）：身份私钥、OPK 私钥、ratchet 链密钥在 IndexedDB 中均以
+ *   AES-GCM 封装存盘。封装密钥不再来自登录口令，而由平台认证器
+ *   （Touch ID / Windows Hello / 生物识别）经 WebAuthn PRF 扩展派生，
+ *   解封需用户本地验证（生物识别/PIN），私钥与设备绑定。
+ *   无平台认证器或 PRF 不可用时，回退到登录口令 PBKDF2 派生密钥封装。
+ *
  * 零知识：私钥永不离开客户端；服务端只存密文 + per-recipient enc_key，无法解密。
  * 客户端不存消息，按需从服务端拉取密文解密渲染（仅持久化私钥与 ratchet 状态）。
  * 离线消息：用户上线后拉取服务端存档的密文，本地解密。
@@ -30,6 +36,14 @@ window.E2E = (function () {
     const b = new Uint8Array(s.length);
     for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i);
     return b;
+  }
+  function b64u(buf) {
+    return b64(buf).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function b64uDec(str) {
+    let s = str.replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    return unb64(s);
   }
   const enc = new TextEncoder();
   const dec = new TextDecoder();
@@ -55,6 +69,12 @@ window.E2E = (function () {
     return db().then(d => new Promise((res, rej) => {
       const r = d.transaction(store).objectStore(store).get(key);
       r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    }));
+  }
+  function idbGetAll(store) {
+    return db().then(d => new Promise((res, rej) => {
+      const r = d.transaction(store).objectStore(store).getAll();
+      r.onsuccess = () => res(r.result || []); r.onerror = () => rej(r.error);
     }));
   }
   function idbPut(store, val) {
@@ -102,18 +122,132 @@ window.E2E = (function () {
     return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, k, ct));
   }
 
-  // 私钥加密存储（用用户口令派生密钥）
-  async function deriveWrapKey(password, salt) {
-    const km = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
-    return crypto.subtle.deriveKey(
-      { name: 'PBKDF2', salt, iterations: PBKDF2_ITER, hash: 'SHA-256' }, km,
-      { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  // ---------- 私钥封装（at-rest protection） ----------
+  // myWrapKey：内存中的封装密钥（32 字节）。
+  //   - 平台模式：由 WebAuthn PRF 派生（解封需生物识别/PIN，绑定设备）
+  //   - 口令模式：由登录口令 PBKDF2 派生（无平台认证器时回退）
+  // 用它封装：身份私钥、OPK 私钥、ratchet 链密钥。
+  let myWrapKey = null;        // Uint8Array(32) 或 null
+  let protectionMode = 'password'; // 'password' | 'webauthn'
+
+  async function aesKey(rawBytes) {
+    return crypto.subtle.importKey('raw', rawBytes, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+  }
+  // 登录口令派生封装密钥（回退路径）
+  async function deriveWrapKeyRaw(password, salt) {
+    const km = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits(
+      { name: 'PBKDF2', salt, iterations: PBKDF2_ITER, hash: 'SHA-256' }, km, 256);
+    return new Uint8Array(bits);
+  }
+  // 用指定 raw 封装密钥加解密
+  async function wrapWith(rawKey, data) {
+    const iv = rand(12);
+    const k = await aesKey(rawKey);
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, k, data));
+    return { wrapped: b64(ct), iv: b64(iv) };
+  }
+  async function unwrapWith(rawKey, wrappedB64, ivB64) {
+    const k = await aesKey(rawKey);
+    return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(ivB64) }, k, unb64(wrappedB64)));
+  }
+  // 用当前 myWrapKey 封装/解封
+  function wrapPriv(rawPriv) {
+    if (!myWrapKey) return Promise.reject(new Error('封装密钥未就绪'));
+    return wrapWith(myWrapKey, rawPriv);
+  }
+  function unwrapPriv(wrappedB64, ivB64) {
+    if (!myWrapKey) return Promise.reject(new Error('封装密钥未就绪'));
+    return unwrapWith(myWrapKey, wrappedB64, ivB64);
   }
 
-  // ---------- 会话状态 ----------
-  // sessions[peer] = { peer, rk, send_ck, send_seq, recv_ck, recv_seq, peer_ik, initiated }
-  async function getSession(peer) { return (await idbGet('sessions', peer)) || null; }
-  async function putSession(s) { await idbPut('sessions', s); }
+  // ---------- WebAuthn PRF 平台密钥 ----------
+  async function platformAuthAvailable() {
+    try {
+      if (typeof PublicKeyCredential === 'undefined' ||
+        typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable !== 'function') return false;
+      return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+    } catch (e) { return false; }
+  }
+  function supportsPrf(assertion) {
+    const ext = assertion && assertion.getClientExtensionResults && assertion.getClientExtensionResults();
+    return !!(ext && ext.prf && ext.prf.enabled);
+  }
+  function prfResult(assertion) {
+    const ext = assertion && assertion.getClientExtensionResults && assertion.getClientExtensionResults();
+    const first = ext && ext.prf && ext.prf.results && ext.prf.results.first;
+    return first ? new Uint8Array(first) : null;
+  }
+  // 评估 PRF → 封装密钥（需用户本地验证）
+  async function prfDerive(credIdB64u, salt) {
+    const challenge = rand(32);
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge,
+        allowCredentials: [{ type: 'public-key', id: b64uDec(credIdB64u) }],
+        userVerification: 'required',
+        extensions: { prf: { eval: { first: salt } } },
+        timeout: 60000,
+      }
+    });
+    let first = prfResult(assertion);
+    if (!first) throw new Error('WebAuthn PRF 不可用：当前浏览器/认证器不支持 PRF 扩展');
+    return hkdf(first, 'e2e_wrap_key_v1', 32);
+  }
+  // 注册平台驻留凭据并评估 PRF → {credId, wrapKey}
+  async function createPlatformCred(username, salt) {
+    const challenge = rand(32);
+    const userId = await crypto.subtle.digest('SHA-256', enc.encode(username));
+    const cred = await navigator.credentials.create({
+      publicKey: {
+        challenge,
+        rp: { name: 'Private Chat E2E' },
+        user: { id: new Uint8Array(userId), name: username, displayName: username },
+        pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+        authenticatorSelection: { userVerification: 'required', residentKey: 'preferred', authenticatorAttachment: 'platform' },
+        extensions: { prf: { eval: { first: salt } } },
+        timeout: 60000,
+      }
+    });
+    const credId = b64u(cred.rawId);
+    let first = prfResult(cred);
+    if (!first) {
+      // create 未返回 PRF（部分实现需 get() 评估）
+      first = await prfDerive(credId, salt);
+    }
+    return { credId, wrapKey: await hkdf(first, 'e2e_wrap_key_v1', 32) };
+  }
+
+  // ---------- 会话状态（ratchet 链密钥封装存盘） ----------
+  // sessions[peer] 在内存中为 { peer, rk, send_ck, send_seq, recv_ck, recv_seq, peer_ik, initiated }
+  // 存盘时整体封装为 blob（链密钥不落明文）
+  async function getSession(peer) {
+    const rec = await idbGet('sessions', peer);
+    if (!rec) return null;
+    if (rec.blob && myWrapKey) {
+      const payload = await unwrapWith(myWrapKey, rec.blob, rec.iv);
+      const obj = JSON.parse(dec.decode(payload));
+      return { peer, ...obj };
+    }
+    // 旧版明文记录兼容
+    return {
+      peer, rk: rec.rk, send_ck: rec.send_ck, send_seq: rec.send_seq,
+      recv_ck: rec.recv_ck, recv_seq: rec.recv_seq, peer_ik: rec.peer_ik, initiated: rec.initiated,
+    };
+  }
+  async function putSession(s) {
+    const payload = enc.encode(JSON.stringify({
+      rk: s.rk, send_ck: s.send_ck, send_seq: s.send_seq,
+      recv_ck: s.recv_ck, recv_seq: s.recv_seq, peer_ik: s.peer_ik, initiated: s.initiated,
+    }));
+    if (myWrapKey) {
+      const w = await wrapWith(myWrapKey, payload);
+      await idbPut('sessions', { peer: s.peer, iv: w.iv, blob: w.wrapped });
+    } else {
+      const obj = JSON.parse(dec.decode(payload));
+      await idbPut('sessions', { peer: s.peer, ...obj });
+    }
+  }
   async function ratchetStep(ckBytes) {
     const mk = await hkdf(ckBytes, 'message_key', 32);
     const next = await hkdf(ckBytes, 'chain_advance', 32);
@@ -122,8 +256,9 @@ window.E2E = (function () {
 
   // ---------- 公共状态 ----------
   let myUsername = null;
-  let myIdentityPriv = null; // CryptoKey
-  let myIdentityPubRaw = null; // Uint8Array(65)
+  let myIdentityPriv = null;      // CryptoKey（非导出，用于 DH）
+  let myIdentityPrivRaw = null;   // Uint8Array（内存缓存，用于平台密钥迁移重封装；不落盘）
+  let myIdentityPubRaw = null;    // Uint8Array(65)
   let myFingerprint = null;
   let token = null; // JWT，用于 REST 调用
 
@@ -139,26 +274,49 @@ window.E2E = (function () {
   async function ensureIdentity(username, password) {
     myUsername = username;
     const rec = await idbGet('keys', username);
+    const usePlatform = await platformAuthAvailable();
     if (rec) {
-      // 已有身份密钥，用口令解锁
-      const wrap = await deriveWrapKey(password, unb64(rec.salt));
-      try {
-        const privRaw = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(rec.iv) }, wrap, unb64(rec.priv));
-        myIdentityPriv = await importPriv(privRaw);
-        myIdentityPubRaw = unb64(rec.pub);
-      } catch (e) {
-        throw new Error('解锁私钥失败：口令错误或数据损坏');
+      // 已有身份密钥：按存盘的 protectionMode 解封
+      if (rec.mode === 'webauthn' && rec.credId) {
+        // 平台密钥解封：PRF 派生封装密钥（需生物识别/PIN）
+        myWrapKey = await prfDerive(rec.credId, unb64(rec.salt));
+        protectionMode = 'webauthn';
+      } else {
+        // 口令解封（兼容旧记录无 mode 字段）
+        myWrapKey = await deriveWrapKeyRaw(password, unb64(rec.salt));
+        protectionMode = 'password';
       }
+      let privRawBytes;
+      try {
+        privRawBytes = await unwrapPriv(rec.priv, rec.iv);
+      } catch (e) {
+        throw new Error('解锁私钥失败：' + (protectionMode === 'webauthn' ? '平台验证失败或数据损坏' : '口令错误或数据损坏'));
+      }
+      myIdentityPrivRaw = privRawBytes;
+      myIdentityPriv = await importPriv(privRawBytes);
+      myIdentityPubRaw = unb64(rec.pub);
     } else {
       // 首次：生成身份密钥对
       const ik = await genECDH();
       const pr = await privRaw(ik);
       const pu = await pubRaw(ik);
       const salt = rand(16);
-      const wrap = await deriveWrapKey(password, salt);
-      const iv = rand(12);
-      const wrapped = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, wrap, pr));
-      await idbPut('keys', { username, priv: b64(wrapped), iv: b64(iv), salt: b64(salt), pub: b64(pu) });
+      let credId = null;
+      if (usePlatform) {
+        // 平台认证器可用 → 用 PRF 封装（注册凭据，需生物识别）
+        try {
+          const pc = await createPlatformCred(username, salt);
+          myWrapKey = pc.wrapKey; credId = pc.credId; protectionMode = 'webauthn';
+        } catch (e) {
+          // 用户取消或 PRF 不可用 → 回退口令封装
+          myWrapKey = await deriveWrapKeyRaw(password, salt); protectionMode = 'password';
+        }
+      } else {
+        myWrapKey = await deriveWrapKeyRaw(password, salt); protectionMode = 'password';
+      }
+      const w = await wrapPriv(pr);
+      await idbPut('keys', { username, priv: w.wrapped, iv: w.iv, salt: b64(salt), pub: b64(pu), mode: protectionMode, credId });
+      myIdentityPrivRaw = pr;
       myIdentityPriv = ik.privateKey;
       myIdentityPubRaw = pu;
     }
@@ -177,8 +335,9 @@ window.E2E = (function () {
       const pubRawB = await pubRaw(pk);
       const privRawB = await privRaw(pk);
       const id = 'opk_' + Date.now() + '_' + i + '_' + [...rand(4)].map(x => x.toString(16).padStart(2, '0')).join('');
-      // 私钥本地存（用口令？简化：直接存 raw，因 IndexedDB 同源隔离。生产可再加口令封装）
-      await idbPut('prekeys', { id, priv: b64(privRawB), pub: b64(pubRawB) });
+      // OPK 私钥用 myWrapKey 封装存盘（不落明文）
+      const w = await wrapPriv(privRawB);
+      await idbPut('prekeys', { id, priv: w.wrapped, iv: w.iv, pub: b64(pubRawB) });
       batch.push({ id, pubkey: b64(pubRawB) });
     }
     await fetchJSON('/api/e2e/keys/upload', {
@@ -242,15 +401,17 @@ window.E2E = (function () {
     // 取对方身份公钥（header.ik_pub 即可）
     const theirIK = await importPub(unb64(header.ik_pub));
     const theirEK = await importPub(unb64(header.ek_pub));
-    // 取自己对应 opk_id 的私钥（一次性预密钥）
+    // 取自己对应 opk_id 的私钥（一次性预密钥，封装存盘 → 解封）
     const opkRec = await idbGet('prekeys', header.opk_id);
     if (!opkRec) throw new Error('本地无此预密钥（可能已在其他设备消耗）');
-    const myOPKpriv = await importPriv(unb64(opkRec.priv));
-    // 同样的三次 DH（角色对调）
-    const DH1 = new Uint8Array(await dh(myIdentityPriv, theirIK));
-    const DH2 = new Uint8Array(await dh(myOPKpriv, theirIK));   // 注意：DH2 = DH(OPK_priv, their IK) 不对
-    // 修正：标准 X3DH 中响应方 DH2 = DH(IK_priv, their EK), DH3 = DH(OPK_priv, their EK)
-    // 为保证双方一致，严格对齐发起方推导：
+    let opkPrivRaw;
+    if (opkRec.iv) {
+      opkPrivRaw = await unwrapPriv(opkRec.priv, opkRec.iv);
+    } else {
+      opkPrivRaw = unb64(opkRec.priv); // 旧版明文兼容
+    }
+    const myOPKpriv = await importPriv(opkPrivRaw);
+    // 严格对齐发起方推导：
     //   发起方: DH1=IK_my·IK_them, DH2=EK_my·IK_them, DH3=EK_my·OPK_them
     //   响应方: DH1=IK_my·IK_them, DH2=IK_my·EK_them, DH3=OPK_my·EK_them  (对称等价)
     const DH1b = new Uint8Array(await dh(myIdentityPriv, theirIK));
@@ -315,7 +476,6 @@ window.E2E = (function () {
       sess = await deriveReceiveSession(sender, header);
     }
     // 按 seq 步进 recv_ck（支持离线批量按顺序处理）
-    // 离线消息按 key_id 升序拉取，seq 单调递增，依次步进即可
     const { mk, next } = await ratchetStep(unb64(sess.recv_ck));
     sess.recv_ck = b64(next);
     sess.recv_seq = sess.recv_seq + 1;
@@ -348,11 +508,55 @@ window.E2E = (function () {
     return msgs.length;
   }
 
+  // ---------- 平台密钥迁移：把口令封装升级为 PRF 封装 ----------
+  async function enablePlatformKey() {
+    if (!(await platformAuthAvailable())) throw new Error('当前环境无平台认证器（需 Touch ID / Windows Hello / 生物识别）');
+    if (!myUsername) throw new Error('请先登录并初始化 E2E');
+    if (!myIdentityPrivRaw) throw new Error('身份私钥未在内存（请重新登录后再迁移）');
+    const oldWrap = myWrapKey; // 旧封装密钥（口令派生）
+    // 注册平台凭据 + 评估 PRF 得新封装密钥（需生物识别）
+    const newSalt = rand(16);
+    const pc = await createPlatformCred(myUsername, newSalt);
+    const newWrap = pc.wrapKey;
+    // 1) 重封装身份私钥
+    const w = await wrapWith(newWrap, myIdentityPrivRaw);
+    await idbPut('keys', {
+      username: myUsername, priv: w.wrapped, iv: w.iv, salt: b64(newSalt),
+      pub: b64(myIdentityPubRaw), mode: 'webauthn', credId: pc.credId,
+    });
+    // 2) 重封装所有未消耗的预密钥
+    const prekeys = await idbGetAll('prekeys');
+    for (const p of prekeys) {
+      let raw;
+      if (p.iv && oldWrap) raw = await unwrapWith(oldWrap, p.priv, p.iv);
+      else raw = unb64(p.priv); // 旧版明文
+      const nw = await wrapWith(newWrap, raw);
+      await idbPut('prekeys', { id: p.id, priv: nw.wrapped, iv: nw.iv, pub: p.pub });
+    }
+    // 3) 重封装所有 ratchet 会话
+    const sessions = await idbGetAll('sessions');
+    for (const s of sessions) {
+      let payload;
+      if (s.blob && oldWrap) payload = await unwrapWith(oldWrap, s.blob, s.iv);
+      else payload = enc.encode(JSON.stringify({
+        rk: s.rk, send_ck: s.send_ck, send_seq: s.send_seq,
+        recv_ck: s.recv_ck, recv_seq: s.recv_seq, peer_ik: s.peer_ik, initiated: s.initiated,
+      })); // 旧版明文
+      const nw = await wrapWith(newWrap, payload);
+      await idbPut('sessions', { peer: s.peer, iv: nw.iv, blob: nw.wrapped });
+    }
+    myWrapKey = newWrap;
+    protectionMode = 'webauthn';
+    return { enabled: true, credId: pc.credId };
+  }
+
   // ---------- 暴露 API ----------
   return {
     setToken(t) { token = t; },
     getUsername() { return myUsername; },
     getFingerprint() { return myFingerprint; },
+    getProtectionMode() { return protectionMode; },
+    isPlatformAvailable: platformAuthAvailable,
     /** 登录/注册成功后调用：解锁/生成身份密钥并上传公钥+预密钥 */
     async init(username, password) {
       await ensureIdentity(username, password);
@@ -366,8 +570,10 @@ window.E2E = (function () {
           prekeys: [], // 已在 ensureIdentity 首次上传
         }),
       });
-      return { fingerprint: myFingerprint };
+      return { fingerprint: myFingerprint, mode: protectionMode };
     },
+    /** 升级到平台密钥封装（一键迁移，无需重输口令；私钥已在内存） */
+    enablePlatformKey,
     /** 拉取已支持 E2E 的成员（发送时作为接收方） */
     async getMembers() {
       const d = await fetchJSON('/api/e2e/members', { headers: { Authorization: 'Bearer ' + token } });

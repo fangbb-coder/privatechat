@@ -1057,6 +1057,7 @@
       <div class="header-title">Private Chat</div>
       <div class="header-right">
         <span id="e2e-status" class="e2e-status" title="端到端加密状态">E2E: 未启用</span>
+        <button class="header-btn" id="platform-key-btn" title="启用平台密钥保护私钥（Touch ID / Windows Hello）" style="display:none;" onclick="enablePlatformKey()">🔒</button>
         <button class="header-btn" id="admin-btn" onclick="showAdminPanel()" style="display: none;">⚙️</button>
         <button class="header-btn header-btn-danger" onclick="showChangePasswordModal()">🔑</button>
         <button class="header-btn header-btn-danger" onclick="logout()">退出</button>
@@ -2183,16 +2184,38 @@
     // 更新 E2E 状态显示
     function updateE2EStatus() {
       const el = document.getElementById('e2e-status');
+      const btn = document.getElementById('platform-key-btn');
       if (!el) return;
       if (!e2eReady) {
         el.textContent = 'E2E: 未启用';
         el.style.color = '#999';
+        if (btn) btn.style.display = 'none';
         return;
       }
       const fp = E2E.getFingerprint();
       const shortFp = fp ? fp.slice(0, 23) + '…' : '';
-      el.textContent = `E2E ✓ ${e2eMembers.length} 成员${shortFp ? ' · ' + shortFp : ''}`;
+      const mode = E2E.getProtectionMode();
+      const modeLabel = mode === 'webauthn' ? '平台密钥🔒' : '口令';
+      el.textContent = `E2E ✓ ${e2eMembers.length} 成员 · ${modeLabel}${shortFp ? ' · ' + shortFp : ''}`;
       el.style.color = '#2e7d32';
+      // 仅当平台认证器可用且尚未启用平台密钥时显示升级按钮
+      if (btn) {
+        E2E.isPlatformAvailable().then(avail => {
+          btn.style.display = (avail && mode !== 'webauthn') ? 'block' : 'none';
+        });
+      }
+    }
+
+    // 一键升级到平台密钥封装（Touch ID / Windows Hello），无需重输口令
+    async function enablePlatformKey() {
+      if (!e2eReady) { alert('请先登录并初始化 E2E'); return; }
+      try {
+        const r = await E2E.enablePlatformKey();
+        updateE2EStatus();
+        alert('已启用平台密钥保护：私钥与 ratchet 状态现由设备生物识别封装，登录口令不再能解封。');
+      } catch (e) {
+        alert('启用平台密钥失败：' + e.message);
+      }
     }
 
     // 撤回消息
