@@ -47,7 +47,7 @@ class Settings(BaseSettings):
 
     # ==================== 应用 ====================
     app_name: str = "Private Chat"
-    app_version: str = "3.6.1"
+    app_version: str = "3.7.0"
     environment: str = Field("development", description="development / production")
 
     host: str = "0.0.0.0"

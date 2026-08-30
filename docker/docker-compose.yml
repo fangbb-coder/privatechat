@@ -3,7 +3,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: privatechat:3.6.1
+    image: privatechat:3.7.0
     container_name: privatechat
     restart: unless-stopped
     ports:
@@ -15,7 +15,8 @@ services:
       - chat-logs:/app/logs
       - chat-keys:/app/backend/keys
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; req=urllib.request.Request('http://127.0.0.1:8080/health', headers={'Host':'localhost'}); sys.exit(0 if urllib.request.urlopen(req, timeout=3).status==200 else 1)"]
+      # 不注入 Host 头:避免 ALLOWED_HOSTS 严格模式下健康检查被 TrustedHostMiddleware 拒绝
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).status==200 else 1)"]
       interval: 30s
       timeout: 5s
       start_period: 15s

@@ -1,5 +1,5 @@
 """
-Private Chat v3.6.0 - 安全增强版加密聊天系统
+Private Chat v3.7.0 - HTTPS 安全加固版加密聊天系统
 新功能：
 - 密码强度检查
 - 登录失败限制（增强：IP级别锁定）
@@ -78,7 +78,7 @@ from models.user import (
 
 # 初始化日志
 logger = setup_logger(settings)
-logger.info("Private Chat v3.6 启动中...")
+logger.info(f"Private Chat v{settings.app_version} 启动中...")
 
 # ==================== FastAPI 应用初始化 ====================
 app = FastAPI(

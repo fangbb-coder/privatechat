@@ -59,7 +59,7 @@ generate_env() {
 # 模式: $([[ $dev_mode -eq 1 ]] && echo "开发（dev，自动生成密钥与域名）" || echo "生产")
 
 APP_NAME=Private Chat
-APP_VERSION=3.6.1
+APP_VERSION=3.7.0
 ENVIRONMENT=$([[ $dev_mode -eq 1 ]] && echo "development" || echo "production")
 HOST_PORT=8080
 
