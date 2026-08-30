@@ -545,6 +545,26 @@
       font-style: italic;
     }
 
+    /* 端到端加密标识 */
+    .e2e-badge {
+      display: inline-block;
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 8px;
+      background: #2e7d32;
+      color: #fff;
+      margin-left: 4px;
+      vertical-align: middle;
+    }
+    .e2e-status {
+      font-size: 11px;
+      color: #999;
+      padding: 0 6px;
+      white-space: nowrap;
+    }
+    [data-theme="dark"] .e2e-status { color: #aaa; }
+    .offline-msg { opacity: 0.85; }
+
     /* 公告消息特殊样式 */
     .msg.announcement {
       background: #fff3cd !important;
@@ -1036,6 +1056,7 @@
       </div>
       <div class="header-title">Private Chat</div>
       <div class="header-right">
+        <span id="e2e-status" class="e2e-status" title="端到端加密状态">E2E: 未启用</span>
         <button class="header-btn" id="admin-btn" onclick="showAdminPanel()" style="display: none;">⚙️</button>
         <button class="header-btn header-btn-danger" onclick="showChangePasswordModal()">🔑</button>
         <button class="header-btn header-btn-danger" onclick="logout()">退出</button>
@@ -1189,6 +1210,7 @@
     </div>
   </div>
 
+  <script src="e2e.js"></script>
   <script>
     let ws = null;
     let currentUser = null;
@@ -1203,6 +1225,8 @@
     let isAdmin = false;
     let messages = {};
     let currentTheme = localStorage.getItem('theme') || 'light';
+    let e2eReady = false;          // E2E 身份密钥是否已解锁
+    let e2eMembers = [];           // 已支持 E2E 的成员列表（缓存）
 
     // ==================== Web Crypto API 工具函数 ====================
 
@@ -1720,6 +1744,17 @@
         const rawKey = await crypto.subtle.exportKey('raw', sessionKey);
         sessionStorage.setItem(`session_key_${currentUser}`, bufferToBase64(rawKey));
 
+        // 端到端加密：解锁/生成身份密钥并上传公钥+预密钥（私钥永不上传）
+        try {
+          E2E.setToken(authToken);
+          await E2E.init(currentUser, password);
+          e2eReady = true;
+        } catch (e) {
+          // E2E 初始化失败不阻塞登录（仅提示），可继续使用旧消息通道
+          console.warn('E2E 初始化失败:', e.message);
+          e2eReady = false;
+        }
+
         // 连接 WebSocket（发送加密的 session key）
         connectWebSocket(data.access_token, encryptedSessionKey);
 
@@ -1772,6 +1807,21 @@
 
           hideLoading();
           setTimeout(() => scrollToBottom(), 100);
+
+          // 端到端加密：拉取离线消息（服务端只存密文，本地解密后渲染，不持久化）
+          // 同时刷新 E2E 成员列表，并补充自身预密钥池
+          if (e2eReady) {
+            refreshE2EMembers();
+            E2E.fetchOfflineMessages(m => renderE2EMessage({
+              message_id: m.message_id,
+              sender: m.sender,
+              text: m.text,
+              time: m.time ? new Date(m.time).getTime() : Date.now(),
+              isOffline: true
+            })).catch(err =>
+              console.warn('拉取离线 E2E 消息失败:', err.message)
+            );
+          }
           return;
         }
 
@@ -1792,6 +1842,8 @@
 
         if (d.type === "online_users") {
           updateOnlineUsers(d.users, d.count);
+          // 在线用户变化时刷新 E2E 成员（新上线的用户可能刚上传公钥）
+          if (e2eReady) refreshE2EMembers();
           return;
         }
 
@@ -1800,6 +1852,28 @@
           if (msgEl) {
             msgEl.classList.add('msg-recall');
             msgEl.querySelector('.msg-content').textContent = '[消息已撤回]';
+          }
+          return;
+        }
+
+        // 端到端加密消息：服务端只转发密文，本地用私钥解密（不存本地）
+        if (d.type === "e2e_message") {
+          try {
+            const text = await E2E.decryptIncoming(d);
+            renderE2EMessage({
+              message_id: d.message_id,
+              sender: d.sender,
+              text,
+              time: d.time ? d.time * 1000 : Date.now()
+            });
+            // 实时收到的消息也标记已读，避免上线后重复拉取
+            if (d.message_id) {
+              fetch('/api/e2e/messages/' + encodeURIComponent(d.message_id) + '/read', {
+                method: 'POST', headers: { Authorization: 'Bearer ' + authToken }
+              }).catch(() => {});
+            }
+          } catch (err) {
+            console.error('E2E 实时消息解密失败', err.message);
           }
           return;
         }
@@ -2035,16 +2109,90 @@
       const input = document.getElementById("message-input");
       const message = input.value.trim();
 
-      if (message && ws && ws.readyState === WebSocket.OPEN) {
-        const encryptedMsg = await encryptMessage(message);
-        ws.send(JSON.stringify({ message: encryptedMsg, type: "message" }));
-        input.value = "";
+      if (!message || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-        // 移动端保持输入框焦点，防止键盘收起
-        setTimeout(() => {
-          input.focus();
-        }, 50);
+      // 端到端加密：当 E2E 就绪且有接收成员时，走信封加密（服务端无法解密）
+      if (e2eReady && e2eMembers.length > 0) {
+        try {
+          const { ciphertext, recipients } = await E2E.encryptForRecipients(message, e2eMembers);
+          ws.send(JSON.stringify({
+            type: "e2e_message",
+            ciphertext,
+            recipients,
+            room: "public"
+          }));
+          input.value = "";
+          // 本地回显自己发出的消息（不持久化到 sessionStorage）
+          renderE2EMessage({
+            message_id: null,
+            sender: currentUser,
+            text: message,
+            time: Date.now()
+          });
+        } catch (err) {
+          // 某接收方可能尚未上传公钥/预密钥，给出提示
+          alert('E2E 发送失败：' + err.message);
+        }
+        setTimeout(() => input.focus(), 50);
+        return;
       }
+
+      // 回退：旧的消息通道（服务端可解密）
+      const encryptedMsg = await encryptMessage(message);
+      ws.send(JSON.stringify({ message: encryptedMsg, type: "message" }));
+      input.value = "";
+      setTimeout(() => input.focus(), 50);
+    }
+
+    // 渲染 E2E 消息到聊天区（仅内存展示，不写入 sessionStorage，满足"客户端不存消息"）
+    function renderE2EMessage(msg) {
+      const chatDiv = document.getElementById("chat");
+      const msgDiv = document.createElement("div");
+      msgDiv.className = "msg";
+      const sender = msg.sender || "系统";
+      const isMine = sender === currentUser;
+      const messageId = msg.message_id || ('local_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6));
+
+      msgDiv.setAttribute('data-message-id', messageId);
+      msgDiv.className += isMine ? " mine" : " other";
+      if (msg.isOffline) msgDiv.className += " offline-msg";
+
+      const ts = msg.time ? new Date(msg.time).toLocaleTimeString() : new Date().toLocaleTimeString();
+      msgDiv.innerHTML = `
+        <div class="msg-sender">
+          <span>${escapeHTML(sender)}${msg.isOffline ? ' <span class="e2e-badge" title="离线消息">离线</span>' : ''} <span class="e2e-badge" title="端到端加密">E2E</span></span>
+          <span class="msg-time">${ts}</span>
+        </div>
+        <div class="msg-content">${escapeHTML(msg.text)}</div>
+      `;
+      chatDiv.appendChild(msgDiv);
+      scrollToBottom();
+    }
+
+    // 刷新 E2E 成员列表（发送时作为接收方）
+    async function refreshE2EMembers() {
+      if (!e2eReady) { e2eMembers = []; return; }
+      try {
+        e2eMembers = await E2E.getMembers();
+        updateE2EStatus();
+      } catch (e) {
+        console.warn('刷新 E2E 成员失败:', e.message);
+      }
+    }
+
+    // 更新 E2E 状态显示
+    function updateE2EStatus() {
+      const el = document.getElementById('e2e-status');
+      if (!el) return;
+      if (!e2eReady) {
+        el.textContent = 'E2E: 未启用';
+        el.style.color = '#999';
+        return;
+      }
+      const fp = E2E.getFingerprint();
+      const shortFp = fp ? fp.slice(0, 23) + '…' : '';
+      el.textContent = `E2E ✓ ${e2eMembers.length} 成员${shortFp ? ' · ' + shortFp : ''}`;
+      el.style.color = '#2e7d32';
     }
 
     // 撤回消息
