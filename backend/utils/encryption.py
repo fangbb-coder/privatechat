@@ -190,7 +190,8 @@ class RSAEncryptor:
         if not isinstance(plaintext, str):
             raise TypeError("plaintext 必须为 str")
         public_key = RSA.import_key(public_key_pem)
-        cipher = PKCS1_OAEP.new(public_key)
+        # 与前端 Web Crypto API 的 RSA-OAEP + SHA-256 对齐（默认 SHA-1 会导致解密失败）
+        cipher = PKCS1_OAEP.new(public_key, hashAlgo=SHA256)
         encrypted = cipher.encrypt(plaintext.encode('utf-8'))
         return base64.b64encode(encrypted).decode('utf-8')
 
@@ -207,7 +208,8 @@ class RSAEncryptor:
         try:
             private_key = RSA.import_key(private_key_pem)
             encrypted_data = base64.b64decode(ciphertext.encode('utf-8'))
-            cipher = PKCS1_OAEP.new(private_key)
+            # 与前端 Web Crypto API 的 RSA-OAEP + SHA-256 对齐（默认 SHA-1 会导致解密失败）
+            cipher = PKCS1_OAEP.new(private_key, hashAlgo=SHA256)
             decrypted = cipher.decrypt(encrypted_data)
             return decrypted.decode('utf-8')
         except Exception:
