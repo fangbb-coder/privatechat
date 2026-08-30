@@ -5,10 +5,9 @@
 安全说明：
 - 消息加密 (MessageEncryptor)：AES-256-GCM，与浏览器 Web Crypto API 兼容，
   使用 RSA-OAEP 协商的随机 session key，无需弱 KDF，带认证标签防篡改
-- 旧消息加密 (AESEncryptor)：AES-256-CBC，保留用于向后兼容旧消息
 - 数据库字段加密 (DatabaseEncryptor)：AES-256-GCM，使用独立的 DB_ENCRYPTION_KEY（H2 密钥分离），
   KDF 使用 PBKDF2-SHA256（H1 强 KDF）
-- RSA 解密 (RSAEncryptor)：统一错误路径与恒定时间处理，降低填充预言风险（H6）
+- RSA 解密 (RSAEncryptor)：仅使用 RSA-OAEP，统一错误路径，降低填充预言风险（H6）
 - RSA session key 解密 (decrypt_session_key)：RSA-OAEP(SHA-256)，与 Web Crypto API 兼容
 """
 import base64
@@ -19,9 +18,8 @@ from typing import Tuple, Optional
 
 from Crypto.Cipher import AES
 from Crypto.PublicKey import RSA
-from Crypto.Cipher import PKCS1_OAEP, PKCS1_v1_5
+from Crypto.Cipher import PKCS1_OAEP
 from Crypto.Hash import SHA256
-from Crypto.Util.Padding import pad, unpad
 from Crypto.Random import get_random_bytes
 
 from utils.logger import get_logger
@@ -30,60 +28,6 @@ logger = get_logger()
 
 # 绝不向日志输出密钥/IV/明文（L1）
 # 历史版本在 debug 日志中打印了 key.hex() / 明文，已全部移除。
-
-
-class AESEncryptor:
-    """AES-256-CBC 加密器（与前端 CryptoJS 兼容）。
-
-    注意：为保持与前端 CryptoJS 的兼容性，密钥派生沿用 SHA-256(password)。
-    这是前端约定，若需更强 KDF 需前后端同步迁移到 PBKDF2/scrypt。
-    此处对消息加密保留该约定，但对数据库字段加密使用独立的强 KDF（见 DatabaseEncryptor）。
-    """
-
-    NONCE_SIZE = 12  # GCM 模式使用的 nonce 大小（保留以兼容）
-    CBC_IV_SIZE = 16  # CBC 模式使用的 IV 大小
-    GCM_TAG_SIZE = 16  # GCM 模式的认证标签大小
-
-    @staticmethod
-    def get_key(password: str) -> bytes:
-        """从密码生成32字节的AES-256密钥（前端 CryptoJS 兼容）"""
-        return hashlib.sha256(password.encode('utf-8')).digest()
-
-    @staticmethod
-    def encrypt(plaintext: str, password: str) -> str:
-        """使用AES-256-CBC加密消息（与前端 CryptoJS 完全兼容）"""
-        if not isinstance(plaintext, str):
-            raise TypeError("plaintext 必须为 str")
-        key = AESEncryptor.get_key(password)
-        iv = get_random_bytes(AESEncryptor.CBC_IV_SIZE)
-
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        padded = pad(plaintext.encode('utf-8'), AES.block_size)
-        ciphertext = cipher.encrypt(padded)
-
-        # 组合: IV + ciphertext
-        combined = iv + ciphertext
-        return base64.b64encode(combined).decode('utf-8')
-
-    @staticmethod
-    def decrypt(ciphertext: str, password: str) -> str:
-        """使用AES-256-CBC解密消息（与前端 CryptoJS 完全兼容）"""
-        if not isinstance(ciphertext, str) or not ciphertext:
-            raise ValueError("ciphertext 不能为空")
-
-        data = base64.b64decode(ciphertext.encode('utf-8'))
-        if len(data) < AESEncryptor.CBC_IV_SIZE + AES.block_size:
-            raise ValueError("密文长度不合法")
-
-        key = AESEncryptor.get_key(password)
-        # 前端 CBC 格式: IV(16字节) + ciphertext
-        iv = data[:AESEncryptor.CBC_IV_SIZE]
-        encrypted = data[AESEncryptor.CBC_IV_SIZE:]
-
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        decrypted = cipher.decrypt(encrypted)
-        unpadded = unpad(decrypted, AES.block_size)
-        return unpadded.decode('utf-8')
 
 
 class RSAKeyManager:
@@ -232,9 +176,10 @@ class RSAEncryptor:
     """RSA 加密器 - 用于加密敏感数据（如登录密码）
 
     安全说明（H6）：
+    - 仅使用 RSA-OAEP（与前端 Web Crypto API 对齐），不再支持 PKCS#1 v1.5，
+      彻底消除 Bleichenbacher 填充预言攻击面。
     - 解密统一返回 ValueError，不区分"填充错误/格式错误/解码错误"，
-      降低 Bleichenbacher 填充预言攻击的可区分性。
-    - PKCS1_v1_5 解密使用随机 sentinel 而非固定值，避免通过 sentinel 判断成败。
+      降低可区分性。
     """
 
     @staticmethod
@@ -252,7 +197,7 @@ class RSAEncryptor:
     @staticmethod
     def decrypt(ciphertext: str, private_key_pem: str) -> str:
         """
-        使用 RSA 私钥解密数据（支持 PKCS#1 v1.5 和 OAEP 两种格式）
+        使用 RSA 私钥解密数据（仅 OAEP）
 
         统一在失败时抛出 ValueError（不泄露具体失败阶段），降低填充预言风险。
         """
@@ -262,31 +207,11 @@ class RSAEncryptor:
         try:
             private_key = RSA.import_key(private_key_pem)
             encrypted_data = base64.b64decode(ciphertext.encode('utf-8'))
-        except Exception:
-            # 统一错误，不区分 base64 解码失败 / 密钥导入失败
-            raise ValueError("RSA 解密失败")
-
-        # 先尝试 PKCS#1 v1.5（JSEncrypt 默认格式），使用随机 sentinel
-        try:
-            sentinel = get_random_bytes(32)  # 随机 sentinel，避免固定值被探测
-            cipher = PKCS1_v1_5.new(private_key)
-            decrypted = cipher.decrypt(encrypted_data, sentinel)
-            # 若返回 sentinel，说明解密失败 -> 统一走错误路径
-            if decrypted is not sentinel and len(decrypted) > 0:
-                # 尝试 utf-8 解码
-                try:
-                    return decrypted.decode('utf-8')
-                except UnicodeDecodeError:
-                    pass  # 继续尝试 OAEP
-        except Exception:
-            pass  # 静默，统一错误
-
-        # 回退 OAEP
-        try:
             cipher = PKCS1_OAEP.new(private_key)
             decrypted = cipher.decrypt(encrypted_data)
             return decrypted.decode('utf-8')
         except Exception:
+            # 统一错误，不区分 base64 解码失败 / 密钥导入失败 / OAEP 解密失败
             raise ValueError("RSA 解密失败")
 
 

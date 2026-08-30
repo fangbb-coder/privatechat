@@ -10,6 +10,7 @@
 - 密码强度校验
 - 密码历史按用户过滤（M8）
 - MITM 防护：MessageEncryptor(AES-GCM) + session key 协商 + 公钥指纹 + TLS 强制
+- 技术债清理：AESEncryptor 移除 + RSA 仅 OAEP + HSTS/CSP 安全头
 """
 import os
 import sys
@@ -42,18 +43,20 @@ def test_config_loads_and_validation():
         Settings(environment="production", allowed_origins="", allowed_hosts="")
 
 
-def test_aes_message_roundtrip():
-    """消息加密解密可逆"""
-    from utils.encryption import AESEncryptor
+def test_aes_encryptor_removed():
+    """技术债清理：AESEncryptor(CBC) 已彻底移除"""
+    import utils.encryption as enc_mod
+    import utils as utils_mod
 
-    password = "SharedChatKey2025!"
-    for plaintext in ["hello", "你好，世界", "a" * 1000, ""]:
-        if plaintext == "":
-            continue  # 空串 CBC 解密会失败，仅测非空
-        ct = AESEncryptor.encrypt(plaintext, password)
-        assert ct != plaintext
-        pt = AESEncryptor.decrypt(ct, password)
-        assert pt == plaintext
+    # 模块中不再定义 AESEncryptor
+    assert not hasattr(enc_mod, "AESEncryptor")
+    # 包级不再导出 AESEncryptor
+    assert not hasattr(utils_mod, "AESEncryptor")
+    assert "AESEncryptor" not in utils_mod.__all__
+
+    # 导入应失败
+    with pytest.raises(ImportError):
+        from utils.encryption import AESEncryptor  # noqa: F401
 
 
 def test_database_encryptor_roundtrip_and_hmac_stability():
@@ -104,7 +107,7 @@ def test_password_validator():
 
 
 def test_rsa_roundtrip_and_unified_error():
-    """H6: RSA 加解密可逆，损坏密文统一抛 ValueError"""
+    """H6: RSA-OAEP 加解密可逆，损坏密文统一抛 ValueError"""
     from utils.encryption import RSAEncryptor, RSAKeyManager
 
     with tempfile.TemporaryDirectory() as d:
@@ -119,6 +122,27 @@ def test_rsa_roundtrip_and_unified_error():
         # 损坏密文应统一抛 ValueError（不泄露填充阶段）
         with pytest.raises(ValueError):
             RSAEncryptor.decrypt(ct[:-4] + "AAAA", priv_pem)
+
+
+def test_rsa_decrypt_rejects_pkcs1_v15():
+    """技术债清理：RSAEncryptor.decrypt 仅接受 OAEP，拒绝 PKCS#1 v1.5 密文"""
+    import base64
+    from Crypto.PublicKey import RSA
+    from Crypto.Cipher import PKCS1_v1_5
+    from utils.encryption import RSAEncryptor
+
+    priv = RSA.generate(2048)
+    pub = priv.publickey()
+    priv_pem = priv.export_key().decode('utf-8')
+
+    # 用 PKCS#1 v1.5 加密（模拟旧 JSEncrypt 客户端格式）
+    cipher = PKCS1_v1_5.new(pub)
+    v15_ct = cipher.encrypt(b"legacy-password")
+    v15_ct_b64 = base64.b64encode(v15_ct).decode('utf-8')
+
+    # v1.5 密文应被拒绝（统一 ValueError，不再回退 v1.5）
+    with pytest.raises(ValueError):
+        RSAEncryptor.decrypt(v15_ct_b64, priv_pem)
 
 
 def test_userdb_password_history_isolation(tmp_path, monkeypatch):
@@ -314,3 +338,34 @@ def test_no_default_encryption_key_field():
     # 应不存在 default_encryption_key 字段
     assert not hasattr(s, "default_encryption_key")
     assert not hasattr(s, "DEFAULT_ENCRYPTION_KEY")
+
+
+# ============================================================
+# 技术债清理测试：HSTS / CSP 安全响应头
+# ============================================================
+
+def test_security_headers_csp_and_hsts_config():
+    """技术债清理：HSTS 仅 HTTPS 宣告 + preload；CSP 收紧 connect-src"""
+    import inspect
+    import importlib
+    import backend.main as main_mod
+    importlib.reload(main_mod)
+
+    src = inspect.getsource(main_mod.SecurityHeadersMiddleware)
+
+    # HSTS 仅在 HTTPS 响应中宣告（gate 条件存在）
+    assert "is_https" in src
+    assert "if is_https:" in src
+    # HSTS 含 preload
+    assert "preload" in src
+    assert "max-age=31536000; includeSubDomains; preload" in src
+
+    # CSP 收紧：无 unsafe-eval、无遗留 unsafe-hashes
+    assert "unsafe-eval" not in src
+    assert "unsafe-hashes" not in src
+    # connect-src 仅 wss（移除明文 ws，与 TLS 强制对齐）
+    assert "connect-src 'self' wss:" in src
+    assert "ws: wss:" not in src
+    # 保留 frame-ancestors 'none'、object-src 'none'
+    assert "frame-ancestors 'none'" in src
+    assert "object-src 'none'" in src

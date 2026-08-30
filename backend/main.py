@@ -47,7 +47,6 @@ from fastapi.exceptions import RequestValidationError
 from utils.config import settings
 from utils.logger import setup_logger, get_logger
 from utils import (
-    AESEncryptor,
     RSAKeyManager,
     PasswordHasher,
     PasswordValidator,
@@ -139,9 +138,14 @@ app.add_middleware(
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """添加安全 HTTP 响应头
 
-    H4: CSP 不再使用 unsafe-inline / unsafe-eval。
-    前端内联脚本已迁移为外部 app.js（通过 script-src 'self' 加载）。
-    若必须保留少量内联，应使用 nonce 机制。
+    HSTS / CSP 说明：
+    - HSTS（Strict-Transport-Security）含 preload，仅在 HTTPS 响应中发送，
+      避免在偶发的 HTTP 响应中宣告 HSTS。
+    - CSP 的 script-src 仍保留 'unsafe-inline'，因为前端当前存在内联 <script>
+      与 onclick 内联事件处理器（含动态生成的撤回/踢人按钮）。
+      彻底移除需将内联脚本外联为 app.js 并用事件委托替换所有内联处理器，
+      属于需浏览器回归测试的前端重构，列为后续项。
+    - style-src 保留 'unsafe-inline'：前端存在内联 <style> 与 style 属性。
     """
 
     async def dispatch(self, request: StarletteRequest, call_next):
@@ -153,17 +157,24 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-XSS-Protection"] = "0"  # 现代浏览器建议 0，依赖 CSP
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
-        # 内容安全策略 (CSP) - H4: 移除 unsafe-inline / unsafe-eval
-        # 前端脚本全部走 'self'（外部 app.js）；ws/wss 用于实时聊天
+        # HSTS 仅在 HTTPS 响应中宣告（避免在 HTTP 响应中泄露/误导）
+        proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+        is_https = proto == "https" or request.url.scheme == "https"
+        if is_https:
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=31536000; includeSubDomains; preload"
+            )
+
+        # 内容安全策略 (CSP)
+        # script-src 保留 'unsafe-inline'（内联脚本 + onclick，见类文档说明）
         csp = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' 'unsafe-hashes'; "
+            "script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob:; "
             "font-src 'self' data:; "
-            "connect-src 'self' ws: wss:; "
+            "connect-src 'self' wss:; "
             "object-src 'none'; "
             "base-uri 'self'; "
             "form-action 'self'; "

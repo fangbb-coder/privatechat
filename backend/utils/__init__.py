@@ -4,7 +4,6 @@
 from .config import settings
 from .logger import setup_logger, get_logger
 from .encryption import (
-    AESEncryptor,
     RSAKeyManager,
     PasswordHasher,
     PasswordValidator,
@@ -28,7 +27,6 @@ __all__ = [
     'settings',
     'setup_logger',
     'get_logger',
-    'AESEncryptor',
     'RSAKeyManager',
     'PasswordHasher',
     'PasswordValidator',

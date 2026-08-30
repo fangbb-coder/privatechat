@@ -94,15 +94,32 @@ docker run --rm -v private-chat_chat-keys:/data -v $(pwd):/backup alpine \
 
 ## 五、反向代理与 HTTPS
 
-生产环境建议在前置 Nginx 反向代理并启用 HTTPS，仅暴露 443：
+生产环境建议在前置 Nginx 反向代理并启用 HTTPS，仅暴露 443。
+Nginx 层负责 HTTP→HTTPS 跳转与 HSTS/CSP（纵深防御，与应用层中间件叠加）：
 
 ```nginx
+# HTTP → HTTPS 强制跳转
+server {
+    listen 80;
+    server_name chat.example.com;
+    return 301 https://$host$request_uri;
+}
+
 server {
     listen 443 ssl http2;
     server_name chat.example.com;
 
     ssl_certificate     /etc/ssl/chat.example.com.pem;
     ssl_certificate_key /etc/ssl/chat.example.com.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    # HSTS（反代层；应用层中间件也会在 HTTPS 响应重复声明）
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+
+    # CSP（反代层；与后端 SecurityHeadersMiddleware 一致，纵深防御）
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' wss:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
 
     # 前端与 API
     location / {
