@@ -1818,7 +1818,8 @@
               sender: m.sender,
               text: m.text,
               time: m.time ? new Date(m.time).getTime() : Date.now(),
-              isOffline: true
+              isOffline: true,
+              recalled: !!m.recalled
             })).catch(err =>
               console.warn('拉取离线 E2E 消息失败:', err.message)
             );
@@ -2152,19 +2153,37 @@
       msgDiv.className = "msg";
       const sender = msg.sender || "系统";
       const isMine = sender === currentUser;
-      const messageId = msg.message_id || ('local_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6));
+      const messageId = (msg.message_id && !String(msg.message_id).startsWith('local_'))
+        ? msg.message_id
+        : ('local_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6));
 
       msgDiv.setAttribute('data-message-id', messageId);
       msgDiv.className += isMine ? " mine" : " other";
       if (msg.isOffline) msgDiv.className += " offline-msg";
+      // 已撤回：应用统一 msg-recall 样式（灰、斜体），与普通消息撤回视觉一致
+      const isRecalled = !!msg.recalled;
+      if (isRecalled) {
+        msgDiv.classList.add('msg-recall');
+      }
+
+      // 撤回按钮：仅对"自己发的 + 后端已分配真实 message_id + 当前未被撤回"的消息显示
+      // 2 分钟撤回时间窗由后端强校验，这里只负责展示入口，超时时后端会返回错误提示
+      let recallBtn = '';
+      if (isMine && !isRecalled && String(messageId).startsWith('e2e_')) {
+        recallBtn = `<button class="recall-btn" onclick="recallMessage('${messageId}')">撤回</button>`;
+      }
 
       const ts = msg.time ? new Date(msg.time).toLocaleTimeString() : new Date().toLocaleTimeString();
+      const badges = [];
+      if (msg.isOffline) badges.push('<span class="e2e-badge" title="离线消息">离线</span>');
+      badges.push('<span class="e2e-badge" title="端到端加密">E2E</span>');
       msgDiv.innerHTML = `
         <div class="msg-sender">
-          <span>${escapeHTML(sender)}${msg.isOffline ? ' <span class="e2e-badge" title="离线消息">离线</span>' : ''} <span class="e2e-badge" title="端到端加密">E2E</span></span>
+          <span>${escapeHTML(sender)}${badges.length ? ' ' + badges.join(' ') : ''}</span>
+          ${recallBtn}
           <span class="msg-time">${ts}</span>
         </div>
-        <div class="msg-content">${escapeHTML(msg.text)}</div>
+        <div class="msg-content">${escapeHTML(isRecalled ? '[消息已撤回]' : msg.text)}</div>
       `;
       chatDiv.appendChild(msgDiv);
       scrollToBottom();

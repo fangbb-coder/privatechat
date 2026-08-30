@@ -496,6 +496,23 @@ window.E2E = (function () {
     const msgs = data.messages || [];
     for (const m of msgs) {
       try {
+        // 已撤回的 E2E 消息：服务端已清空 ciphertext/enc_key，跳过解密，直接以已撤回态回显
+        if (m.recalled) {
+          if (onDecrypted) {
+            onDecrypted({
+              message_id: m.message_id,
+              sender: m.sender,
+              text: '[消息已撤回]',
+              time: m.created_at,
+              recalled: true,
+            });
+          }
+          // 标记已读（避免下次上线重复拉）
+          fetch('/api/e2e/messages/' + encodeURIComponent(m.message_id) + '/read', {
+            method: 'POST', headers: { Authorization: 'Bearer ' + token }
+          }).catch(() => {});
+          continue;
+        }
         const text = await decryptIncoming(m);
         if (onDecrypted) onDecrypted({ message_id: m.message_id, sender: m.sender, text, time: m.created_at });
         // 标记已读

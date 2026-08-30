@@ -93,6 +93,14 @@ class E2EDatabase:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_e2e_mk_recipient ON e2e_message_keys(recipient_hmac, read)"
             )
+            # ===== 增量迁移：老库缺列时补上 =====
+            # v3.7.1 撤回功能新增：e2e_messages.recalled (0 正常 / 1 已撤回)
+            try:
+                cols = [r[1] for r in conn.execute("PRAGMA table_info(e2e_messages)").fetchall()]
+                if "recalled" not in cols:
+                    conn.execute("ALTER TABLE e2e_messages ADD COLUMN recalled INTEGER DEFAULT 0")
+            except Exception as e:
+                logger.warning(f"e2e_messages 加 recalled 列失败（忽略）: {type(e).__name__}: {e}")
             conn.commit()
         logger.info("E2E 数据库初始化完成（零知识：服务端不持有任何客户端私钥）")
 
@@ -233,43 +241,70 @@ class E2EDatabase:
     def get_user_messages(self, username: str, unread_only: bool = True) -> List[Dict]:
         """拉取发给该用户的消息（离线消息补偿）。
         客户端不存消息，每次上线/需要时拉取密文，本地解密后渲染（不持久化）。
+        已撤回的消息不再返回密文，而是携带 recalled=1，客户端按"[消息已撤回]"渲染。
         """
         rh = DatabaseEncryptor.username_hmac(username)
         with self._get_conn() as conn:
+            base_sql = """SELECT mk.id AS key_id, mk.message_id, mk.enc_key, mk.ratchet_header, mk.read,
+                          m.sender, m.ciphertext, m.created_at, m.room,
+                          COALESCE(m.recalled, 0) AS recalled
+                          FROM e2e_message_keys mk
+                          JOIN e2e_messages m ON mk.message_id = m.message_id
+                          WHERE mk.recipient_hmac=?"""
             if unread_only:
-                rows = conn.execute(
-                    """SELECT mk.id AS key_id, mk.message_id, mk.enc_key, mk.ratchet_header, mk.read,
-                       m.sender, m.ciphertext, m.created_at, m.room
-                       FROM e2e_message_keys mk
-                       JOIN e2e_messages m ON mk.message_id = m.message_id
-                       WHERE mk.recipient_hmac=? AND mk.read=0
-                       ORDER BY mk.id""",
-                    (rh,),
-                ).fetchall()
+                rows = conn.execute(base_sql + " AND mk.read=0 ORDER BY mk.id", (rh,)).fetchall()
             else:
-                rows = conn.execute(
-                    """SELECT mk.id AS key_id, mk.message_id, mk.enc_key, mk.ratchet_header, mk.read,
-                       m.sender, m.ciphertext, m.created_at, m.room
-                       FROM e2e_message_keys mk
-                       JOIN e2e_messages m ON mk.message_id = m.message_id
-                       WHERE mk.recipient_hmac=?
-                       ORDER BY mk.id DESC LIMIT 200""",
-                    (rh,),
-                ).fetchall()
-            return [
-                {
+                rows = conn.execute(base_sql + " ORDER BY mk.id DESC LIMIT 200", (rh,)).fetchall()
+            result = []
+            for r in rows:
+                is_recalled = bool(r["recalled"])
+                result.append({
                     "key_id": r["key_id"],
                     "message_id": r["message_id"],
                     "sender": self.encryptor.decrypt(r["sender"]),
-                    "ciphertext": r["ciphertext"],
-                    "enc_key": r["enc_key"],
-                    "ratchet_header": r["ratchet_header"],
+                    # 已撤回：不返回密文与 enc_key（服务端保留原始记录只做审计，客户端不再需要解密）
+                    "ciphertext": "" if is_recalled else r["ciphertext"],
+                    "enc_key": "" if is_recalled else r["enc_key"],
+                    "ratchet_header": "" if is_recalled else r["ratchet_header"],
                     "created_at": r["created_at"],
                     "room": r["room"],
                     "read": r["read"],
-                }
-                for r in rows
-            ]
+                    "recalled": is_recalled,
+                })
+            return result
+
+    def get_message_metadata(self, message_id: str) -> Optional[Dict]:
+        """撤回权限判断用：仅返回 sender（明文）和 created_at，不解密正文。
+        message_id 不存在时返回 None。"""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                """SELECT sender, created_at, COALESCE(recalled, 0) AS recalled
+                   FROM e2e_messages WHERE message_id=?""",
+                (message_id,),
+            ).fetchone()
+            if not row:
+                return None
+        # 解析 ISO 时间 -> epoch 秒（与 settings.message_recall_minutes * 60 对齐）
+        try:
+            created_epoch = datetime.fromisoformat(row["created_at"]).timestamp()
+        except Exception:
+            created_epoch = 0.0
+        return {
+            "sender": self.encryptor.decrypt(row["sender"]),
+            "created_at_epoch": created_epoch,
+            "recalled": bool(row["recalled"]),
+        }
+
+    def recall_message(self, message_id: str) -> bool:
+        """标记一条 E2E 消息为已撤回（recalled=1）。
+        只改标志位，保留主键与发送方元数据，便于审计/去重。返回是否有行被更新。"""
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE e2e_messages SET recalled=1 WHERE message_id=? AND COALESCE(recalled,0)=0",
+                (message_id,),
+            )
+            conn.commit()
+            return (cur.rowcount or 0) > 0
 
     def mark_read(self, username: str, message_id: str):
         rh = DatabaseEncryptor.username_hmac(username)

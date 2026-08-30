@@ -1785,6 +1785,12 @@ async def chat(ws: WebSocket):
             # 消息撤回
             if data.get("type") == "recall":
                 message_id = data.get("message_id")
+                if not message_id:
+                    continue
+
+                handled = False
+
+                # ---- 路径 A：普通服务端加密消息（内存 messages 字典）----
                 if message_id in messages:
                     # 检查是否是发送者
                     if messages[message_id]["sender"] != username:
@@ -1806,8 +1812,45 @@ async def chat(ws: WebSocket):
                     # 撤回消息
                     messages[message_id]["type"] = "recall"
                     messages[message_id]["content"] = "[消息已撤回]"
+                    handled = True
 
-                    # 广播撤回通知
+                # ---- 路径 B：端到端加密消息（e2e_db SQLite）----
+                elif message_id.startswith("e2e_"):
+                    meta = e2e_db.get_message_metadata(message_id)
+                    if not meta:
+                        await ws.send_json({
+                            "type": "error",
+                            "message": "消息不存在，无法撤回"
+                        })
+                        continue
+
+                    if meta["recalled"]:
+                        # 已撤回：幂等，不报错也不再广播
+                        continue
+
+                    if meta["sender"] != username:
+                        await ws.send_json({
+                            "type": "error",
+                            "message": "只能撤回自己的消息"
+                        })
+                        continue
+
+                    if time.time() - meta["created_at_epoch"] > settings.message_recall_minutes * 60:
+                        await ws.send_json({
+                            "type": "error",
+                            "message": f"消息发送超过 {settings.message_recall_minutes} 分钟，无法撤回"
+                        })
+                        continue
+
+                    if not e2e_db.recall_message(message_id):
+                        logger.warning(f"E2E 撤回打标失败（无行更新）: {message_id}")
+                        continue
+
+                    handled = True
+                    logger.info(f"E2E 消息撤回: {message_id} by {username}")
+
+                if handled:
+                    # 广播撤回通知（所有在线客户端统一用同一格式）
                     for client in clients:
                         try:
                             await client["ws"].send_json({
@@ -1819,7 +1862,8 @@ async def chat(ws: WebSocket):
                             logger.debug(f"发送撤回通知失败: {e}")
                             pass
 
-                    logger.info(f"消息撤回: {message_id} by {username}")
+                    if not message_id.startswith("e2e_"):
+                        logger.info(f"消息撤回: {message_id} by {username}")
                 continue
 
             # E2E 消息（服务端零知识：只存储密文 + per-recipient enc_key，转发给在线客户端）
