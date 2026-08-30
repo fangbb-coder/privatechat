@@ -45,6 +45,13 @@ backend/.env
 .env.*
 !docker/.env.docker.example
 data/.secret_key
+# 运行时数据库（含用户/E2E 密钥数据，绝不入库）
+data/*.db
+data/*.db-journal
+data/*.sqlite
+data/*.sqlite3
+# Trae 临时分享产物
+.trae-html-share-packages/
 
 # Temporary files
 *.tmp
