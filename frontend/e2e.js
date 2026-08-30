@@ -93,9 +93,12 @@ window.E2E = (function () {
   // ---------- 密码学原语 ----------
   function genECDH() { return crypto.subtle.generateKey(CURVE, true, ['deriveKey', 'deriveBits']); }
   async function pubRaw(keyPair) { return new Uint8Array(await crypto.subtle.exportKey('raw', keyPair.publicKey)); }
-  async function privRaw(keyPair) { return new Uint8Array(await crypto.subtle.exportKey('raw', keyPair.privateKey)); }
+  // EC 私钥用 PKCS#8 格式导出/导入（Web Crypto 标准）。
+  // 注意：'raw' 格式仅用于公钥；私钥 'raw' 导出非标准，浏览器会抛
+  // "The key is not of the expected type"，故私钥统一走 pkcs8。
+  async function privRaw(keyPair) { return new Uint8Array(await crypto.subtle.exportKey('pkcs8', keyPair.privateKey)); }
   function importPub(rawBytes) { return crypto.subtle.importKey('raw', rawBytes, CURVE, false, []); }
-  function importPriv(rawBytes) { return crypto.subtle.importKey('raw', rawBytes, CURVE, false, ['deriveBits']); }
+  function importPriv(privBytes) { return crypto.subtle.importKey('pkcs8', privBytes, CURVE, false, ['deriveBits']); }
   function dh(privKey, pubKey) { return crypto.subtle.deriveBits({ name: 'ECDH', public: pubKey }, privKey, 256); }
   async function hkdf(ikmBytes, infoStr, len = 32) {
     const base = await crypto.subtle.importKey('raw', ikmBytes, 'HKDF', false, ['deriveBits']);
