@@ -1297,7 +1297,7 @@
       }
       const encoded = new TextEncoder().encode(plaintext);
       const encrypted = await crypto.subtle.encrypt(
-        { name: 'RSA-OAEP' }, rsaCryptoKey, encoded
+        { name: 'RSA-OAEP', hash: 'SHA-256' }, rsaCryptoKey, encoded
       );
       return bufferToBase64(encrypted);
     }
@@ -1312,7 +1312,7 @@
       // 导出 raw key bytes，用 RSA-OAEP 加密后传输
       const rawKey = await crypto.subtle.exportKey('raw', sessionKey);
       const encryptedKey = await crypto.subtle.encrypt(
-        { name: 'RSA-OAEP' }, rsaCryptoKey, rawKey
+        { name: 'RSA-OAEP', hash: 'SHA-256' }, rsaCryptoKey, rawKey
       );
       return bufferToBase64(encryptedKey);
     }
@@ -1396,7 +1396,7 @@
             await getRSAPublicKey();
             // 用 RSA-OAEP 加密已有的 raw session key（不重新生成）
             const encryptedKey = await crypto.subtle.encrypt(
-              { name: 'RSA-OAEP' }, rsaCryptoKey, rawKey
+              { name: 'RSA-OAEP', hash: 'SHA-256' }, rsaCryptoKey, rawKey
             );
             const encryptedSessionKey = bufferToBase64(encryptedKey);
             restoreMessages();
@@ -2075,7 +2075,7 @@
           // 重新用 RSA-OAEP 加密 session key
           const rawKey = await crypto.subtle.exportKey('raw', sessionKey);
           const encryptedKey = await crypto.subtle.encrypt(
-            { name: 'RSA-OAEP' }, rsaCryptoKey, rawKey
+            { name: 'RSA-OAEP', hash: 'SHA-256' }, rsaCryptoKey, rawKey
           );
           const encryptedSessionKey = bufferToBase64(encryptedKey);
           connectWebSocket(authToken, encryptedSessionKey);
