@@ -1,8 +1,10 @@
-# Private Chat v3.6.1 — 安全增强版加密聊天系统
+# Private Chat v3.7.0 — HTTPS 安全加固版加密聊天系统
 
-> 本仓库已完成一轮全面安全审计与修复（详见 `REPOSITORY_ANALYSIS_REPORT.md`）。
-> 当前版本：v3.6.1（修复分支 `fix/ai-security-remediation`）。
-> 推荐通过 Docker Compose 一键部署，完整操作手册见 `docs/DEPLOYMENT_OPERATION_MANUAL.md`。
+> 本仓库已完成两轮安全加固：首轮全面审计与修复（见 `REPOSITORY_ANALYSIS_REPORT.md`），
+> 次轮 HTTPS/MITM 防护加固（强制 TLS + HSTS/CSP + RSA-OAEP-SHA256 对齐）。
+> 当前版本：**v3.7.0**（main 分支）。
+> 推荐通过 Docker Compose + Nginx 反向代理部署，完整操作手册见 `docs/DEPLOYMENT_OPERATION_MANUAL.md`，
+> 简明部署指南见 `docker/DEPLOY.md`。
 
 ---
 
@@ -11,9 +13,31 @@
 | 版本 | 说明 |
 |------|------|
 | v3.6.0 | 原始发布版本（存在若干安全与可用性问题） |
-| **v3.6.1** | **当前版本，已修复报告中的全部问题**。变更如下。 |
+| v3.6.1 | 首轮 AI 安全修复：补全缺失模块、密钥分离、强 KDF、CSP 加固、异常脱敏、RSA 解密加固、删除用户二次确认等 |
+| **v3.7.0** | **当前版本，HTTPS/MITM 防护加固 + 关键 Bug 修复**。变更如下。 |
 
-### v3.6.1 变更一览（AI 安全修复批次）
+### v3.7.0 变更一览（HTTPS 安全加固 + Bug 修复）
+
+**🔴 关键 Bug 修复（登录/注册不可用）**
+- ✅ **前端 JS 语法错误**：修复 `frontend/index.html` 消息渲染循环结尾的 `});`（误带 `)`），改为正确的 `}`。该错误导致整页 JS 解析中断，**登录/注册按钮点击无反应**。
+- ✅ **RSA 密码解密失败**：前端 Web Crypto API 使用 `RSA-OAEP` + **SHA-256**，而后端 `PKCS1_OAEP.new()` 默认使用 SHA-1，哈希算法不匹配导致登录提示"密码解密失败，请刷新页面重试"。已在 `RSAEncryptor.encrypt/decrypt` 与 `decrypt_session_key` 中显式指定 `hashAlgo=SHA256`，前后端对齐。
+
+**🛡️ MITM 防护（HTTPS 强制）**
+- ✅ **ForceTLSMiddleware**：生产环境（`ENVIRONMENT=production` + `FORCE_TLS=true`）拒绝 `X-Forwarded-Proto != https` 的请求，返回 403，防止 HTTP 明文传输下的中间人攻击。
+- ✅ **Nginx HTTPS 反向代理**：提供 `nginx-privatechat.conf` 模板，负责 TLS 终止、HTTP→HTTPS 强制跳转、`wss://` WebSocket 代理，并透传 `X-Forwarded-Proto: https` 触发应用层 ForceTLS 放行。
+- ✅ **HSTS**：`Strict-Transport-Security: max-age=31536000; includeSubDomains; preload`，仅在 HTTPS 响应中声明（避免在偶发 HTTP 响应中误导）。
+- ✅ **CSP 等安全响应头**：`SecurityHeadersMiddleware` 统一下发 CSP / X-Content-Type-Options / X-Frame-Options / Referrer-Policy / Permissions-Policy / Cache-Control。
+
+**🔐 加密栈清理（移除剩余技术债）**
+- ✅ **移除 AESEncryptor（CBC）**：消息加密统一为 AES-256-GCM（带认证标签防篡改），不再保留 CBC 旧消息兼容路径。
+- ✅ **移除 RSA PKCS#1 v1.5 回退**：`RSAEncryptor.decrypt` 统一使用 RSA-OAEP，不再兼容旧 JSEncrypt 客户端；新前端已全用 OAEP。
+- ✅ **移除 `DEFAULT_ENCRYPTION_KEY`**：消息加密改用 RSA-OAEP 协商的随机 session key + AES-256-GCM，不再依赖静态密码。
+
+**⚙️ 配置**
+- ✅ `APP_VERSION` 升至 `3.7.0`；新增 `FORCE_TLS=true`；`ALLOWED_ORIGINS`/`WS_ALLOWED_ORIGINS` 同时放行 HTTP（过渡）与 HTTPS 来源。
+- ✅ `.env.example` 同步新增 `FORCE_TLS` 配置项与说明。
+
+### v3.6.1 变更一览（首轮 AI 安全修复）
 
 **🔴 致命修复**
 - ✅ 补全缺失的 `utils/config.py` 与 `utils/logger.py` 模块（原仓库无法启动）
@@ -60,11 +84,13 @@
 - 必须包含大小写字母、数字、特殊字符
 - 前端实时验证 + 后端二次验证
 - bcrypt 哈希存储 + 最近 N 条历史防重复（默认 5 条）
+- 登录密码经 **RSA-2048-OAEP（SHA-256）** 加密传输，前端使用 Web Crypto API，后端 `hashAlgo=SHA256` 对齐解密
 
 ### 3. 端到端消息加密
-- 聊天消息 **AES-256-CBC**（与前端 CryptoJS 兼容），支持自定义加密密码
-- 数据库敏感字段 **AES-256-GCM**（PBKDF2-SHA256 派生，独立密钥）
-- RSA-2048 非对称密钥交换（持久化存储于 `backend/keys/`）
+- 聊天消息 **AES-256-GCM**（带认证标签防篡改，与浏览器 Web Crypto API 兼容），使用 RSA-OAEP 协商的随机 session key，无需静态密码
+- 数据库敏感字段 **AES-256-GCM**（PBKDF2-SHA256 派生，独立密钥，HMAC 等值查询）
+- **RSA-2048-OAEP（SHA-256）** 非对称密钥交换（前后端哈希算法对齐），持久化存储于 `backend/keys/`
+- v3.7.0 已移除 AESEncryptor(CBC) 与 RSA PKCS#1 v1.5 回退，加密栈统一为 RSA-OAEP + AES-256-GCM
 
 ### 4. 实时聊天
 - WebSocket 实时通信 + 自动重连 + 心跳
@@ -83,7 +109,8 @@
 - IP 失败 20 次锁定 30 分钟
 - REST 请求 60 次/分钟 · WS 连接 20 次/分钟（单 IP）
 - 生产 CORS / Host / WS-Origin 强制校验（禁止 `*`）
-- CSP / X-Frame / HSTS / X-Content-Type / Permissions-Policy 响应头
+- CSP / X-Frame / HSTS / X-Content-Type / Referrer-Policy / Permissions-Policy 响应头
+- **MITM 防护（v3.7.0）**：生产环境 `FORCE_TLS=true` 时拒绝非 HTTPS 请求；Nginx 终止 TLS 并透传 `X-Forwarded-Proto: https`；HSTS preload 锁定 HTTPS
 - Loguru 结构化日志 + 日志掩码工具 + 文件轮转
 - **生产环境镜像以非 root 用户运行**
 
@@ -127,7 +154,7 @@ ENVIRONMENT=development python3 main.py
 ### 首次登录
 
 - **管理员密码**：首次启动时查看日志末尾 `默认管理员账户已创建 - 用户名: admin, 首次随机密码: ...`；或读取 `.env` 中 `ADMIN_PASSWORD`
-- **加密密码**：登录时留空使用默认 `PrivateChat2025Secure!`；自定义需保证聊天双方一致
+- **消息加密**：v3.7.0 起无需静态加密密码，聊天密钥由 RSA-OAEP 协商的随机 session key 派生（AES-256-GCM），登录后自动建立
 - 注册：点击登录页"立即注册"，按密码强度要求填写即可
 
 ---
@@ -136,12 +163,13 @@ ENVIRONMENT=development python3 main.py
 
 | 文档 | 用途 |
 |------|------|
+| [`docker/DEPLOY.md`](docker/DEPLOY.md) | **Docker 部署简明指南 v3.7.0**（含 Nginx HTTPS 反代、自签证书、故障排查） |
 | [`docs/DEPLOYMENT_OPERATION_MANUAL.md`](docs/DEPLOYMENT_OPERATION_MANUAL.md) | **部署操作手册 v1.0**（环境准备、部署、运维、监控、备份、升级、故障排查全套） |
-| [`docker/DEPLOY.md`](docker/DEPLOY.md) | Docker 快速部署简明指南 |
+| [`nginx-privatechat.conf`](nginx-privatechat.conf) | v3.7.0 Nginx HTTPS 反向代理模板（自签证书 + wss 代理 + ForceTLS 透传） |
 | [`REPOSITORY_ANALYSIS_REPORT.md`](REPOSITORY_ANALYSIS_REPORT.md) | 仓库问题审计报告（问题分级 + 修复建议） |
 | [`docker/docker-compose.yml`](docker/docker-compose.yml) | 生产 compose 模板（端口映射 + 命名卷 + 健康检查） |
 | [`docker/.env.docker.example`](docker/.env.docker.example) | 生产部署 `.env` 模板（35 项） |
-| [`backend/.env.example`](backend/.env.example) | 裸源部署 `.env` 模板 |
+| [`backend/.env.example`](backend/.env.example) | 裸源部署 `.env` 模板（含 v3.7.0 `FORCE_TLS`） |
 
 ---
 
@@ -194,6 +222,7 @@ ENVIRONMENT=development python3 main.py
 │   └── DEPLOY.md               # Docker 简明指南
 ├── docs/
 │   └── DEPLOYMENT_OPERATION_MANUAL.md  # ⭐ 完整部署操作手册 v1.0
+├── nginx-privatechat.conf      # ⭐ v3.7.0 Nginx HTTPS 反代模板（自签证书 + wss）
 ├── tests/                      # pytest 安全基线测试
 ├── REPOSITORY_ANALYSIS_REPORT.md
 ├── pytest.ini
@@ -273,9 +302,24 @@ docker compose build   # 重新 build 让 JS 进 image
 "script-src 'self' 'unsafe-inline' 'unsafe-hashes'; "
 ```
 
-### 4.7 公网无域名 / 无证书
+### 4.7 公网无域名 / 自签证书
 
-`.env` 里 `ALLOWED_ORIGINS` / `ALLOWED_HOSTS` / `WS_ALLOWED_ORIGINS` 可直接填 IP + 端口（如 `http://39.107.111.43:9090`），但强烈建议尽快上 Nginx + Let's Encrypt 终结 HTTPS（明文 HTTP 跑聊天等于明文密码）。临时方案：先 HTTP 跑，但一定改 `admin` 默认密码。
+v3.7.0 提供了公网 IP + 自签证书的可落地方案（已验证于阿里云 ECS）：
+
+1. **`.env`** 里 `ALLOWED_ORIGINS` / `WS_ALLOWED_ORIGINS` 同时填 HTTP 与 HTTPS（过渡期），如 `http://39.107.111.43:9090,https://39.107.111.43`；`ENVIRONMENT=production`、`FORCE_TLS=true`。
+2. **Nginx 自签证书**：仓库附带 `nginx-privatechat.conf` 模板（监听 80 跳转 443、`wss://` 代理、透传 `X-Forwarded-Proto: https`）。自签证书生成：
+
+   ```bash
+   mkdir -p /etc/nginx/ssl
+   openssl req -x509 -newkey rsa:2048 -nodes -keyout /etc/nginx/ssl/selfsigned.key \
+     -out /etc/nginx/ssl/selfsigned.crt -days 825 -subj "/CN=39.107.111.43"
+   # 拷贝模板并 reload
+   cp nginx-privatechat.conf /etc/nginx/conf.d/
+   nginx -t && nginx -s reload
+   ```
+
+3. **云安全组**：放行 443（HTTPS）与 80（跳转用）。浏览器首次访问自签证书会提示 `NET::ERR_CERT_AUTHORITY_INVALID`，点"高级 → 继续前往"即可（生产建议尽快上 Let's Encrypt 正式证书）。
+4. **Docker 端口**：compose 仍映射 `9090:8080`，Nginx 反代到 `127.0.0.1:9090`，对外仅暴露 443。
 
 ### 4.8 GitHub 推送走代理
 
@@ -311,10 +355,11 @@ python -m pytest tests/ -q
 
 ## ⚠️ 注意事项
 
-1. 生产环境务必使用 HTTPS，HTTP 仅用于本地调试。
+1. 生产环境务必使用 HTTPS，HTTP 仅用于本地调试。v3.7.0 起 `FORCE_TLS=true` 会在生产环境强制拒绝非 HTTPS 请求，需 Nginx 透传 `X-Forwarded-Proto: https`。
 2. 更改 `SECRET_KEY` 会让所有登录态失效；更改 `DB_ENCRYPTION_KEY` 会让历史用户/token 解密失败，生产绝不能随意变更。
 3. `RSA keys` 更换将导致**登录密码 RSA 解密失败与历史消息无法解密**，请务必做好备份。
-4. 多用户聊天必须使用**相同的加密密码**才能互相看到消息。
+4. v3.7.0 起消息密钥由 RSA-OAEP 协商的随机 session key 派生，无需各方约定相同静态密码。
+5. 自签证书浏览器会告警 `NET::ERR_CERT_AUTHORITY_INVALID`，仅适合内网/演示；公网生产请使用 Let's Encrypt 正式证书。
 
 ---
 
